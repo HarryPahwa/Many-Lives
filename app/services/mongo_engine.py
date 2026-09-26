@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime
+import logging
 from typing import Any
 
 from app.api.schemas import (
@@ -29,6 +30,9 @@ from app.persistence.views import WorldView as PersistenceWorldView
 from app.services.campaign_service import create_campaign
 from app.services.room_service import generate_room
 from app.world.topology import parse_cell_key
+
+
+logger = logging.getLogger(__name__)
 
 
 class MongoEngine:
@@ -58,7 +62,13 @@ class MongoEngine:
         return campaign
 
     def list_campaigns(self) -> list[CampaignSummary]:
-        return [self._summary(campaign) for campaign in self.repository.list_campaigns()]
+        summaries = []
+        for campaign in self.repository.list_campaigns():
+            try:
+                summaries.append(self._summary(campaign))
+            except StateNotFoundError:
+                logger.warning("Skipping campaign with missing player: %s", campaign["_id"])
+        return summaries
 
     def get_campaign(self, campaign_id: str) -> CampaignSummary | None:
         campaign = self.repository.get_campaign(campaign_id)
