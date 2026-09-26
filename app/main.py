@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import routes_campaigns, routes_debug, routes_evals, routes_turns
+from app.api import routes_campaigns, routes_debug, routes_evals, routes_speech, routes_turns
 from app.services.stubs import ConcurrencyConflict
 from app.services.turn_orchestrator import CampaignNotActive, CampaignNotFound
 
@@ -29,6 +29,7 @@ _CODES = {
     404: "NOT_FOUND",
     409: "CONFLICT",
     422: "UNPROCESSABLE_ENTITY",
+    502: "BAD_GATEWAY",
     503: "SERVICE_UNAVAILABLE",
 }
 
@@ -90,6 +91,7 @@ async def _unexpected(_: Request, exc: Exception) -> JSONResponse:
 
 app.include_router(routes_campaigns.router)
 app.include_router(routes_turns.router)
+app.include_router(routes_speech.router)
 app.include_router(routes_debug.router)
 app.include_router(routes_evals.router)
 

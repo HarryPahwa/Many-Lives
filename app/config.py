@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     debug_endpoints: bool = False
     balance_file: str = "config/balance.yaml"
 
+    # Speech. Empty key means narration stays text-only.
+    elevenlabs_api_key: str = ""
+    # George, a premade narrative voice. Override with any voice id.
+    elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
+    elevenlabs_model_id: str = "eleven_flash_v2_5"
+
 
 @lru_cache
 def get_settings() -> Settings:
