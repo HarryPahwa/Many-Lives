@@ -17,6 +17,9 @@ const state = {
   // The turn_id for the request currently being retried, if any.
   pendingTurnId: null,
   pendingInput: null,
+  // Mirrors TurnResult.debug_available: false when DEBUG_ENDPOINTS is off.
+  debugAvailable: false,
+  lastTurnId: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -396,6 +399,7 @@ async function resumeCampaign(campaignId) {
     renderRoom(resumed.visible_cell);
     renderMeta(resumed.campaign);
     window.dispatchEvent(new CustomEvent("campaign-refreshed"));
+    refreshInspector(null);
   } catch (error) {
     toast(`Could not resume: ${error.message}`);
   } finally {
@@ -408,6 +412,9 @@ async function resumeCampaign(campaignId) {
 // ---------------------------------------------------------------------------
 
 function applyTurnResult(result) {
+  state.debugAvailable = Boolean(result.debug_available);
+  state.lastTurnId = result.turn_id;
+  $("inspector-panel").hidden = !state.debugAvailable;
   logLine(result.narration, result.accepted ? "narration" : "rejected");
   if (result.narration_source === "TEMPLATE") {
     logLine("(narration fell back to template text)", "system");
@@ -416,6 +423,7 @@ function applyTurnResult(result) {
   $("meta-turn").textContent = `turn ${result.turn_sequence}`;
   $("meta-status").textContent = result.campaign_status;
   window.dispatchEvent(new CustomEvent("campaign-refreshed"));
+  refreshInspector(result.turn_id);
 }
 
 async function submitTurn(text) {
@@ -456,6 +464,201 @@ async function submitTurn(text) {
 // ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Context inspector (§9.7, §17.2, §18)
+//
+// The demo's point: the model is handed exact state, a bounded window of
+// recent events, and a few retrieved memories — not the whole history. This
+// panel shows precisely what went into the last turn, sourced from the `turns`
+// record rather than from anything the page kept.
+// ---------------------------------------------------------------------------
+
+function kv(parent, label, value) {
+  const dt = document.createElement("dt");
+  dt.textContent = label;
+  const dd = document.createElement("dd");
+  dd.textContent = value === null || value === undefined ? "—" : String(value);
+  parent.append(dt, dd);
+}
+
+function inspectorSection(root, title) {
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  root.appendChild(heading);
+  return heading;
+}
+
+function idList(root, ids) {
+  const list = document.createElement("ul");
+  list.className = "id-list";
+  if (!ids || ids.length === 0) {
+    const li = document.createElement("li");
+    li.textContent = "none";
+    li.className = "slot-empty";
+    list.appendChild(li);
+  } else {
+    for (const id of ids) {
+      const li = document.createElement("li");
+      li.textContent = id;
+      list.appendChild(li);
+    }
+  }
+  root.appendChild(list);
+}
+
+function renderInspector(debug) {
+  const root = $("inspector");
+  root.replaceChildren();
+  if (!debug) {
+    root.textContent = "No turn inspected yet.";
+    return;
+  }
+
+  const summary = document.createElement("dl");
+  summary.className = "inspector-kv";
+  kv(summary, "turn", debug.turn_id);
+  kv(summary, "kind", debug.kind);
+  kv(summary, "status", debug.status);
+  kv(summary, "path", debug.path);
+  kv(summary, "class", debug.action_class);
+  root.appendChild(summary);
+
+  const manifest = debug.context_manifest;
+  inspectorSection(root, "Context manifest");
+  if (!manifest) {
+    const none = document.createElement("p");
+    none.textContent = "Fast path — no context was built and no model was asked.";
+    none.className = "slot-empty";
+    root.appendChild(none);
+  } else {
+    const mdl = document.createElement("dl");
+    mdl.className = "inspector-kv";
+    kv(mdl, "policy", `v${manifest.policy_version}`);
+    kv(mdl, "est. tokens", manifest.estimated_tokens);
+    kv(mdl, "components", manifest.components.join(", ") || "—");
+    root.appendChild(mdl);
+
+    inspectorSection(root, `Entities (${manifest.entity_ids.length})`);
+    idList(root, manifest.entity_ids);
+
+    inspectorSection(root, `Recent events (${manifest.event_ids.length})`);
+    idList(root, manifest.event_ids);
+
+    inspectorSection(root, `Memories (${manifest.memories.length})`);
+    const memories = document.createElement("ul");
+    memories.className = "id-list";
+    if (manifest.memories.length === 0) {
+      const li = document.createElement("li");
+      li.textContent = "none retrieved";
+      li.className = "slot-empty";
+      memories.appendChild(li);
+    } else {
+      for (const memory of manifest.memories) {
+        const li = document.createElement("li");
+        const score = Number(memory.score).toFixed(2);
+        li.textContent = memory.text
+          ? `${memory.id} (${score}) — ${memory.text}`
+          : `${memory.id} (${score})`;
+        memories.appendChild(li);
+      }
+    }
+    root.appendChild(memories);
+
+    if (manifest.notes && manifest.notes.length) {
+      const notes = document.createElement("p");
+      notes.className = "inspector-note";
+      notes.textContent = manifest.notes.join(" · ");
+      root.appendChild(notes);
+    }
+  }
+
+  inspectorSection(root, "Proposal");
+  const proposal = document.createElement("pre");
+  proposal.className = "inspector-json";
+  proposal.textContent = debug.proposal
+    ? JSON.stringify(debug.proposal, null, 2)
+    : "none — the fast path skipped the adjudicator";
+  root.appendChild(proposal);
+
+  inspectorSection(root, "Effects");
+  const effects = document.createElement("dl");
+  effects.className = "inspector-kv";
+  kv(effects, "accepted", debug.accepted_effect_types.join(", ") || "none");
+  kv(effects, "rejected", debug.rejected_effects.length || "none");
+  kv(effects, "events", debug.event_ids.join(", ") || "none");
+  root.appendChild(effects);
+
+  inspectorSection(root, "Claims and verification");
+  const claims = document.createElement("ul");
+  claims.className = "id-list";
+  if (debug.claims.length === 0) {
+    const li = document.createElement("li");
+    li.textContent = "no claims";
+    li.className = "slot-empty";
+    claims.appendChild(li);
+  } else {
+    for (const claim of debug.claims) {
+      const li = document.createElement("li");
+      li.textContent = `${claim.entity_id}.${claim.attribute} = ${claim.value} [${claim.verdict}]`;
+      claims.appendChild(li);
+    }
+  }
+  root.appendChild(claims);
+
+  if (debug.verification) {
+    const verification = document.createElement("dl");
+    verification.className = "inspector-kv";
+    kv(verification, "checked", debug.verification.claims_checked);
+    kv(verification, "contradictions", debug.verification.contradictions);
+    kv(verification, "unknown entities", debug.verification.unknown_entities);
+    root.appendChild(verification);
+  }
+
+  inspectorSection(root, "Model calls");
+  const calls = document.createElement("ul");
+  calls.className = "id-list";
+  if (debug.model_calls.length === 0) {
+    const li = document.createElement("li");
+    li.textContent = "none — resolved entirely in code";
+    li.className = "slot-empty";
+    calls.appendChild(li);
+  } else {
+    for (const call of debug.model_calls) {
+      const li = document.createElement("li");
+      li.textContent =
+        `${call.role} · ${call.model} · ${call.latency_ms}ms · ` +
+        `${call.input_tokens}→${call.output_tokens} tok · ${call.attempts} attempt(s)`;
+      calls.appendChild(li);
+    }
+  }
+  root.appendChild(calls);
+
+  if (debug.vector_search_ms !== null && debug.vector_search_ms !== undefined) {
+    const vector = document.createElement("p");
+    vector.className = "inspector-note";
+    vector.textContent = `vector search: ${debug.vector_search_ms}ms`;
+    root.appendChild(vector);
+  }
+}
+
+async function refreshInspector(turnId) {
+  if (!state.campaignId || !state.debugAvailable) return;
+  // Only fetch when the panel is actually open: the inspector is a demo
+  // affordance, not something to pay for on every turn.
+  if (!$("inspector-details").open) return;
+  try {
+    const query = turnId ? `?turn_id=${encodeURIComponent(turnId)}` : "";
+    const debug = await api(
+      "GET",
+      `/api/campaigns/${state.campaignId}/debug/context${query}`
+    );
+    renderInspector(debug);
+  } catch (error) {
+    renderInspector(null);
+    $("inspector").textContent = `Inspector unavailable: ${error.message}`;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Restart / reconnect (§18, §29.2)
@@ -517,6 +720,9 @@ function init() {
   });
 
   window.addEventListener("campaign-refreshed", refreshPanels);
+  $("inspector-details").addEventListener("toggle", () => {
+    if ($("inspector-details").open) refreshInspector(state.lastTurnId);
+  });
 
   logLine(
     "Create a campaign or resume an existing one. State lives in the store, not in this page.",

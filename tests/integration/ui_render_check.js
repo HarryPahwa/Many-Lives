@@ -108,7 +108,7 @@ const load = new Function(
   "crypto",
   "fetch",
   "CustomEvent",
-  `${source}\nreturn { renderMinimap, renderCharacter, renderRoom, rememberCampaign, lastCampaign };`
+  `${source}\nreturn { renderMinimap, renderCharacter, renderRoom, rememberCampaign, lastCampaign, renderInspector };`
 );
 const ui = load(
   document,
@@ -258,5 +258,104 @@ assert.strictEqual(
   null,
   "a blocked localStorage must read back as null, not throw"
 );
+
+// --- context inspector (§9.7, §18) -----------------------------------------
+
+ui.renderInspector({
+  campaign_id: "cmp_1",
+  turn_id: "t-1",
+  kind: "ACTION",
+  status: "NARRATED",
+  path: "ADJUDICATED",
+  action_class: "SOCIAL",
+  input: "I ask Mara about the key",
+  context_manifest: {
+    policy_version: 1,
+    components: ["player_state", "current_cell", "semantic_memory"],
+    entity_ids: ["player_1", "npc_7f2a"],
+    event_ids: ["evt_171_1", "evt_172_0"],
+    memories: [{ id: "mem_66f5", score: 0.8312, text: "Mara was struck once." }],
+    estimated_tokens: 1450,
+    notes: ["stub"],
+  },
+  proposal: { action_type: "TALK", actor_id: "player_1" },
+  accepted_effect_types: ["SET_DISPOSITION"],
+  rejected_effects: [],
+  event_ids: ["evt_174_0"],
+  claims: [
+    { entity_id: "npc_7f2a", attribute: "status", value: "ALIVE", verdict: "OK" },
+  ],
+  verification: {
+    claims_checked: 1,
+    contradictions: 0,
+    unknown_entities: 0,
+    absent_entity_mentions: 0,
+  },
+  invariants: null,
+  model_calls: [
+    {
+      role: "ADJUDICATOR",
+      model: "stub/x",
+      input_tokens: 1620,
+      output_tokens: 210,
+      latency_ms: 1840,
+      attempts: 1,
+      schema_valid: true,
+    },
+  ],
+  vector_search_ms: 95,
+  created_at: null,
+  committed_at: null,
+  narrated_at: null,
+});
+
+const inspectorText = JSON.stringify(document.getElementById("inspector"), (k, v) =>
+  k === "classList" ? undefined : v
+);
+for (const expected of [
+  "ADJUDICATED",          // which path the turn took
+  "npc_7f2a",             // entity ids in context
+  "evt_171_1",            // the bounded recent-event window
+  "mem_66f5",             // retrieved memory id
+  "0.83",                 // its score, rounded for display
+  "1450",                 // token estimate
+  "SET_DISPOSITION",      // accepted effects
+  "1840ms",               // model-call latency
+  "95ms",                 // vector search time
+]) {
+  assert.ok(
+    inspectorText.includes(expected),
+    `inspector must surface ${expected}`
+  );
+}
+
+// The fast path must visibly show that no model was consulted.
+ui.renderInspector({
+  campaign_id: "cmp_1",
+  turn_id: "t-2",
+  kind: "ACTION",
+  status: "NARRATED",
+  path: "FAST",
+  action_class: null,
+  input: "north",
+  context_manifest: null,
+  proposal: null,
+  accepted_effect_types: [],
+  rejected_effects: [],
+  event_ids: [],
+  claims: [],
+  verification: null,
+  invariants: null,
+  model_calls: [],
+  vector_search_ms: null,
+});
+const fastText = JSON.stringify(document.getElementById("inspector"), (k, v) =>
+  k === "classList" ? undefined : v
+);
+assert.ok(
+  fastText.includes("no context was built"),
+  "the fast path must say no model was asked"
+);
+assert.ok(!fastText.includes("mem_66f5"), "stale inspector content must be cleared");
 
 console.log("ui_render_check: all assertions passed");
