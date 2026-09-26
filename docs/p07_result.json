@@ -20,7 +20,7 @@
       "entity_ids": 2,
       "event_ids": 0,
       "manifest_memories": 0,
-      "build_ms_median": 0.054
+      "build_ms_median": 0.06
     },
     {
       "events": 100,
@@ -33,7 +33,7 @@
       "entity_ids": 2,
       "event_ids": 5,
       "manifest_memories": 0,
-      "build_ms_median": 0.074
+      "build_ms_median": 0.097
     },
     {
       "events": 1000,
@@ -46,7 +46,7 @@
       "entity_ids": 2,
       "event_ids": 5,
       "manifest_memories": 0,
-      "build_ms_median": 0.662
+      "build_ms_median": 0.424
     },
     {
       "events": 5000,
@@ -59,7 +59,7 @@
       "entity_ids": 2,
       "event_ids": 5,
       "manifest_memories": 0,
-      "build_ms_median": 19.195
+      "build_ms_median": 2.262
     },
     {
       "events": 10000,
@@ -72,7 +72,7 @@
       "entity_ids": 2,
       "event_ids": 5,
       "manifest_memories": 0,
-      "build_ms_median": 7.275
+      "build_ms_median": 7.627
     }
   ],
   "baseline_events": 100,
@@ -81,7 +81,7 @@
   "token_growth_factor": 1.0293,
   "baseline_note": "Growth is measured from the first non-empty checkpoint. The rise from an empty history is the recent-event window filling once, not growth with history.",
   "peak_estimated_tokens": 246,
-  "seed_seconds": 95.16,
+  "seed_seconds": 266.11,
   "passed": true,
   "caveat": "Stored history grows while per-call context stays within budget. Not evidence of a billion-token live campaign (TDD \u00a716.4, \u00a73.2)."
 }
