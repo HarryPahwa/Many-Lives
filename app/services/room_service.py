@@ -148,7 +148,7 @@ def _materialize(
                 "kind": feature.kind,
                 "name": feature.name,
                 "properties": [property_.value for property_ in feature.properties],
-                "state": dict(feature.initial_state),
+                "state": feature.initial_state.model_dump(exclude_none=True),
                 "created_by": "GENERATION",
             }
         )

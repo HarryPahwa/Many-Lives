@@ -60,7 +60,8 @@ def validate_room_dressing(planned: PlannedRoom, dressing: RoomDressing) -> Room
 
     for feature in dressing.features:
         properties = {property_.value for property_ in feature.properties}
-        for key, value in feature.initial_state.items():
+        initial_state = feature.initial_state.model_dump(exclude_none=True)
+        for key, value in initial_state.items():
             if key not in STATE_VALUES or value not in STATE_VALUES[key]:
                 errors.append(f"invalid state {key}={value} on {feature.name}")
             if key == "orientation" and value == "overturned" and "movable" not in properties:
