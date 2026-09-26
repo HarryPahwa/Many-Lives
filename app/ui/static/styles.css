@@ -185,6 +185,22 @@ section {
   }
 }
 
+.log-trace {
+  margin-top: -6px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--muted);
+  background: var(--panel-2);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+.log-trace .trace-key {
+  color: var(--accent);
+}
+
 .log-entry {
   margin: 0 0 12px;
   white-space: pre-wrap;

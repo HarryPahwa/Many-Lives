@@ -17,9 +17,11 @@ from app.domain.types import (
     ActionClass,
     CellSnapshot,
     Event,
+    EventType,
     PlayerSummary,
     Role,
     SnapshotEntity,
+    SocialContext,
 )
 from app.harness.adjudicator import adjudicate as domain_adjudicate
 from app.harness.context_builder import ContextView, build_context as domain_build_context
@@ -211,6 +213,31 @@ def _snapshot(view: WorldView) -> CellSnapshot:
     )
 
 
+def _social_context(view: WorldView, events: list[Event] | None) -> SocialContext | None:
+    """Build the narrator's NPC context from this turn's committed events (§10.6)."""
+    npc_id: str | None = None
+    utterances: list[str] = []
+    revealed: str | None = None
+    for event in events or ():
+        payload = event.payload
+        if event.type in {EventType.DIALOGUE, EventType.CHECK_RESOLVED} and payload.get("npc_id"):
+            npc_id = npc_id or str(payload["npc_id"])
+            if payload.get("utterance"):
+                utterances.append(str(payload["utterance"]))
+        elif event.type == EventType.FACT_REVEALED:
+            revealed = event.summary
+    if npc_id is None:
+        return None
+    npc = next((c for c in view.visible_cell.characters if c.id == npc_id), None)
+    return SocialContext(
+        npc_id=npc_id,
+        persona=npc.name if npc else None,
+        disposition=npc.disposition if npc else None,
+        revealed_fact=revealed,
+        recent_dialogue=[f"Player: {text}" for text in utterances],
+    )
+
+
 def _player_summary(view: WorldView) -> PlayerSummary:
     player = view.player
     return PlayerSummary(
@@ -303,6 +330,13 @@ class ProductionHarness:
             client=self.client,
         )
         proposal = result.proposal
+        params: dict[str, Any] = {}
+        if proposal.check is not None:
+            params = {
+                "check_kind": proposal.check.kind.value,
+                "suggested_difficulty": proposal.check.suggested_difficulty,
+                "approach_modifier": proposal.check.approach_modifier,
+            }
         return (
             Proposal(
                 action_type=proposal.action_type.value,
@@ -310,6 +344,7 @@ class ProductionHarness:
                 targets=proposal.targets,
                 feasibility=proposal.feasibility.value,
                 reason=proposal.reason,
+                params=params,
                 proposed_effects_on_success=[
                     effect.model_dump(mode="json")
                     for effect in proposal.proposed_effects_on_success
@@ -330,12 +365,13 @@ class ProductionHarness:
         kind: str,
         events: list[dict[str, Any]] | None = None,
     ) -> NarrationResult:
+        domain_events = _domain_events(events)
         result, call = domain_narrate(
-            events=_domain_events(events),
+            events=domain_events,
             rejection_reason=resolution.reason if not resolution.accepted else None,
             snapshot=_snapshot(view),
             player_summary=_player_summary(view),
-            social=None,
+            social=_social_context(view, domain_events),
             context_text="Current deterministic state is authoritative.",
             client=self.client,
         )
