@@ -14,8 +14,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
-from app.main import app
 from app.services.stubs import reset_stubs
+
+
+def _app():
+    """The current FastAPI app; see the note in test_turn_loop.py."""
+    import importlib
+
+    return importlib.import_module("app.main").app
 
 OPPOSITE = {"north": "south", "south": "north", "east": "west", "west": "east"}
 OFFSETS = {"north": (0, 1), "south": (0, -1), "east": (1, 0), "west": (-1, 0)}
@@ -31,7 +37,7 @@ def _fresh_world():
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(app)
+    return TestClient(_app())
 
 
 def _create(client: TestClient) -> str:

@@ -19,8 +19,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
-from app.main import app
 from app.services.stubs import get_engine, reset_stubs
+
+
+def _app():
+    """The *current* FastAPI app.
+
+    The restart tests reload app.main, which rebuilds the app and the domain
+    exception classes. A module-level `from app.main import app` would leave
+    later tests driving a stale app whose exception handlers are registered
+    against classes the orchestrator no longer raises.
+    """
+    import importlib
+
+    return importlib.import_module("app.main").app
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +48,7 @@ def _fresh_world(monkeypatch):
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(app)
+    return TestClient(_app())
 
 
 def _create(client: TestClient, seed: int | None = 42) -> str:
@@ -227,7 +239,7 @@ def test_concurrent_turns_on_one_campaign_are_serialized(client: TestClient):
 
 
 def test_unknown_campaign_is_404_everywhere():
-    client = TestClient(app)
+    client = TestClient(_app())
     missing = "cmp_doesnotexist"
     assert client.get(f"/api/campaigns/{missing}").status_code == 404
     assert client.get(f"/api/campaigns/{missing}/map").status_code == 404
@@ -353,7 +365,7 @@ def test_fast_path_skips_the_model_entirely(client: TestClient):
 def test_debug_route_is_404_when_debug_endpoints_is_false(monkeypatch):
     monkeypatch.setenv("DEBUG_ENDPOINTS", "false")
     get_settings.cache_clear()
-    client = TestClient(app)
+    client = TestClient(_app())
     campaign_id = _create(client)
     response = client.get(f"/api/campaigns/{campaign_id}/debug/context")
     assert response.status_code == 404
@@ -505,3 +517,56 @@ def test_adjudication_failure_records_a_machine_readable_reason_code(client: Tes
     assert client.get(f"/api/campaigns/{campaign_id}").json()["current_turn"] == (
         result["turn_sequence"]
     )
+
+
+# ---------------------------------------------------------------------------
+# Every error uses the §17.1 envelope, including unhandled ones
+# ---------------------------------------------------------------------------
+
+
+def test_a_non_active_campaign_is_409_not_a_bare_500(client: TestClient):
+    """A domain exception escaping a route must not bypass §17.1.
+
+    Regression: CampaignNotActive raised inside the create route produced a
+    plain-text "Internal Server Error" with no envelope and the wrong status.
+    """
+    from app.services import stubs
+
+    class FinishedEngine(stubs.StubEngine):
+        def get_campaign(self, campaign_id):
+            summary = super().get_campaign(campaign_id)
+            if summary is not None:
+                summary.status = "COMPLETED"
+            return summary
+
+    stubs.set_engine(FinishedEngine())
+    response = client.post("/api/campaigns", json={"player_name": "Ada", "seed": 9})
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CONFLICT"
+
+
+def test_an_unexpected_error_is_reported_in_the_envelope_without_internals():
+    """§22 — an exception string may carry internal detail; keep it off the wire.
+
+    Uses raise_server_exceptions=False so the client returns the response the
+    way a real HTTP client would, rather than re-raising in-process.
+    """
+    from app.services import stubs
+
+    secret = "connection string postgres://user:hunter2@internal-host/db"
+
+    class ExplodingEngine(stubs.StubEngine):
+        def list_campaigns(self):
+            raise RuntimeError(secret)
+
+    stubs.set_engine(ExplodingEngine())
+    client = TestClient(_app(), raise_server_exceptions=False)
+    response = client.get("/api/campaigns")
+
+    assert response.status_code == 500
+    body = response.json()
+    assert set(body) == {"error"}
+    assert body["error"]["code"] == "INTERNAL"
+    assert "hunter2" not in response.text
+    assert "postgres" not in response.text

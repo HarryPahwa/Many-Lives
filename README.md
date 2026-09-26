@@ -80,6 +80,18 @@ machine that has not installed it. Run everything except them with
 
 ![The harness running](docs/ui-screenshot.png)
 
+### Demo
+
+`docs/DEMO.md` is the rehearsed runbook for the three-minute demo: setup, the
+live sequence with what to say, the kill/restart/resume step, likely questions
+with answers grounded in the build, and what to do when something misbehaves.
+
+```bash
+rm -f .state/demo.json
+STUB_STATE_FILE=.state/demo.json DEBUG_ENDPOINTS=true uvicorn app.main:app
+python scripts/play_script.py --seed 9 --demo   # builds the demo campaign
+```
+
 ### Smoke test
 
 ```bash
@@ -128,6 +140,14 @@ establishes or mutates state. Concretely, and covered by tests:
 - narration is produced *after* commit and can never alter state; if the
   narrator fails, the turn stays committed and falls back to template text;
 - every model- or player-authored string reaches the page via `textContent`.
+
+## What was built during the event
+
+All of it. The repository began on 26 Sep 2026 with an empty scaffold; every
+line of application code, every test, the prompts, the schemas and the demo
+data were written inside the hacking window. `docs/SUBMISSION.md` records the
+§29.4 checklist and an honest account of what works, what is stubbed, and what
+is deliberately not claimed.
 
 ## Workstreams
 
