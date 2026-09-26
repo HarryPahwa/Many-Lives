@@ -420,7 +420,7 @@ def test_narrator_failure_after_commit_keeps_state_and_falls_back(client: TestCl
     direction = view["visible_cell"]["exits"][0]
 
     class BrokenNarrator(stubs.StubHarness):
-        def narrate(self, view, resolution, kind):  # noqa: D102
+        def narrate(self, view, resolution, kind, events=None):  # noqa: D102
             raise RuntimeError("provider timeout")
 
     stubs.set_harness(BrokenNarrator())
@@ -443,10 +443,10 @@ def test_total_narration_failure_still_returns_a_turn(client: TestClient):
     campaign_id = _create(client)
 
     class TotallyBroken(stubs.StubHarness):
-        def narrate(self, view, resolution, kind):
+        def narrate(self, view, resolution, kind, events=None):
             raise RuntimeError("provider down")
 
-        def template_narration(self, view, resolution, kind):
+        def template_narration(self, view, resolution, kind, events=None):
             raise RuntimeError("template broken too")
 
     stubs.set_harness(TotallyBroken())
@@ -478,7 +478,7 @@ def test_html_in_narration_is_returned_verbatim_not_executed(client: TestClient)
     payload = "<script>alert('xss')</script><img src=x onerror=alert(1)>"
 
     class HtmlNarrator(stubs.StubHarness):
-        def narrate(self, view, resolution, kind):
+        def narrate(self, view, resolution, kind, events=None):
             return stubs.NarrationResult(prose=payload, claims=[], source="MODEL")
 
     stubs.set_harness(HtmlNarrator())
@@ -570,3 +570,104 @@ def test_an_unexpected_error_is_reported_in_the_envelope_without_internals():
     assert body["error"]["code"] == "INTERNAL"
     assert "hunter2" not in response.text
     assert "postgres" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# Committed events reach the narrator (§10.6, §7.1.7)
+# ---------------------------------------------------------------------------
+
+
+def test_the_narrator_receives_the_committed_events(client: TestClient):
+    """§10.6 — the narrator gets the committed events, not just their types.
+
+    Requested by Developer B: the adapter had the post-commit view and the
+    resolution, but not the exact persisted records, so it could only infer
+    what happened from the snapshot.
+    """
+    from app.domain.types import Event
+    from app.services import stubs
+
+    seen: list[list[dict]] = []
+
+    class RecordingHarness(stubs.StubHarness):
+        def narrate(self, view, resolution, kind, events=None):
+            seen.append(list(events or []))
+            return super().narrate(view, resolution, kind, events)
+
+    stubs.set_harness(RecordingHarness())
+    campaign_id = _create(client)
+    view = _turn(client, campaign_id, "look").json()
+    direction = view["visible_cell"]["exits"][0]
+    seen.clear()
+
+    result = _turn(client, campaign_id, direction).json()
+
+    assert seen, "narrate was never called"
+    delivered = seen[-1]
+    assert delivered, "a committed move must deliver its events"
+
+    types = {e["type"] for e in delivered}
+    assert "PLAYER_MOVED" in types
+    assert {e["event_id"] for e in delivered} == set(
+        _event_ids_for(client, campaign_id, result["turn_id"])
+    )
+    # Every document must satisfy the domain contract, or B's adapter drops it.
+    for document in delivered:
+        Event(**document)
+
+
+def _event_ids_for(client: TestClient, campaign_id: str, turn_id: str) -> list[str]:
+    debug = client.get(
+        f"/api/campaigns/{campaign_id}/debug/context", params={"turn_id": turn_id}
+    ).json()
+    return debug["event_ids"]
+
+
+def test_a_rejected_turn_delivers_no_events(client: TestClient):
+    """Nothing was committed, so there is nothing for the narrator to report."""
+    from app.services import stubs
+
+    seen: list[list[dict] | None] = []
+
+    class RecordingHarness(stubs.StubHarness):
+        def narrate(self, view, resolution, kind, events=None):
+            seen.append(events)
+            return super().narrate(view, resolution, kind, events)
+
+    stubs.set_harness(RecordingHarness())
+    campaign_id = _create(client)
+    view = _turn(client, campaign_id, "look").json()
+    blocked = next(
+        d for d in ("north", "south", "east", "west")
+        if d not in view["visible_cell"]["exits"]
+    )
+    seen.clear()
+
+    _turn(client, campaign_id, blocked)
+
+    assert seen, "a rejected turn is still narrated"
+    assert not seen[-1], "a rejected turn commits nothing, so delivers no events"
+
+
+def test_committed_event_documents_satisfy_the_domain_contract(client: TestClient):
+    """The seam carries plain dicts; they must still validate as Events.
+
+    `Event` uses extra="forbid", so a stray key silently costs B's adapter the
+    whole record.
+    """
+    from app.domain.types import Event
+    from app.services.stubs import get_engine
+
+    engine = get_engine()
+    if not hasattr(engine, "raw_events"):
+        pytest.skip("installed engine does not expose the raw event log")
+
+    campaign_id = _create(client)
+    _turn(client, campaign_id, "look")
+    view = _turn(client, campaign_id, "look").json()
+    _turn(client, campaign_id, view["visible_cell"]["exits"][0])
+
+    stored = engine.raw_events(campaign_id)
+    assert stored, "playing should have appended events"
+    for document in stored:
+        Event(**document)

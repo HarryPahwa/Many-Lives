@@ -209,7 +209,9 @@ class TurnOrchestrator:
         # 6/7. Post-commit: narrate from committed state. A narrator failure
         #      must not undo the commit (§7.1.7, §21).
         after = engine.load_world_view(campaign_id, request.player_id)
-        narration, source = self._narrate(after, resolution, "ACTION", record)
+        narration, source = self._narrate(
+            after, resolution, "ACTION", record, events=commit.events
+        )
 
         result = self._build_result(
             record.turn_id,
@@ -325,6 +327,7 @@ class TurnOrchestrator:
         resolution: EngineResolution,
         kind: str,
         record: TurnRecord,
+        events: list[dict] | None = None,
     ) -> tuple[str, str]:
         """Narrate, falling back to deterministic template text on failure.
 
@@ -332,7 +335,7 @@ class TurnOrchestrator:
         never raise out of here (§7.1.7).
         """
         try:
-            narration = self.harness.narrate(view, resolution, kind)
+            narration = self.harness.narrate(view, resolution, kind, events)
             if narration.model_call is not None:
                 record.model_calls.append(narration.model_call.model_dump())
             record.narration = {
@@ -348,7 +351,7 @@ class TurnOrchestrator:
                 extra={"campaign_id": view.campaign_id, "turn_id": record.turn_id},
             )
             try:
-                prose = self.harness.template_narration(view, resolution, kind)
+                prose = self.harness.template_narration(view, resolution, kind, events)
             except Exception:  # noqa: BLE001 - last-resort deterministic text
                 prose = resolution.outcome_summary or "You steady yourself."
             record.narration = {"prose": prose, "claims": [], "source": "TEMPLATE"}
