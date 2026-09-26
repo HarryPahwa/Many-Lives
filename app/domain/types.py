@@ -696,3 +696,10 @@ class ModelCallRecord(DomainModel):
     latency_ms: int
     attempts: int
     schema_valid: bool
+
+
+class Verification(DomainModel):
+    claims_checked: int = 0
+    contradictions: int = 0
+    unknown_entities: int = 0
+    absent_entity_mentions: int = 0
