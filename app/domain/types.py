@@ -548,7 +548,7 @@ class Event(BaseModel):
     schema_version: int = 1
 
 
-class TurnResult(BaseModel):
+class EngineTurnResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     turn_id: str
     turn_sequence: int

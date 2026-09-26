@@ -44,6 +44,7 @@ from app.api.schemas import (
     VisibleFeature,
     VisibleItem,
 )
+from app.domain.errors import ConcurrencyConflict
 
 logger = logging.getLogger("many_lives.stubs")
 
@@ -72,10 +73,6 @@ def cell_key(x: int, y: int) -> str:
 def parse_cell_key(key: str) -> tuple[int, int]:
     _, sx, sy = key.split("_")
     return int(sx), int(sy)
-
-
-class ConcurrencyConflict(RuntimeError):
-    """Raised when the campaign moved under us (§9.9) -> HTTP 409."""
 
 
 # ---------------------------------------------------------------------------

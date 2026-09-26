@@ -5,20 +5,25 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import logging
 from typing import Any, Literal, TypeVar
 
 from pymongo import ReturnDocument
 from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
 
+from app.domain.errors import ConcurrencyConflict
+from app.domain.invariants import InvariantReport, check_invariants, static_environment_digest
 from app.domain.rules import Resolution
-from app.domain.types import TurnResult
+from app.domain.types import EngineTurnResult
 from app.persistence.views import WorldView, freeze
 
 
 T = TypeVar("T")
 TransactionCallback = Callable[[Any | None], T]
 TransactionRunner = Callable[[TransactionCallback[T]], T]
+
+logger = logging.getLogger("many_lives.persistence")
 
 
 class PersistenceError(RuntimeError):
@@ -27,10 +32,6 @@ class PersistenceError(RuntimeError):
 
 class StateNotFoundError(PersistenceError):
     """Raised when required campaign state does not exist."""
-
-
-class ConcurrencyConflict(PersistenceError):
-    """Raised when canonical state changed after resolution."""
 
 
 @dataclass(frozen=True)
@@ -249,9 +250,23 @@ class Repository:
             {"campaign_id": campaign_id, "turn_id": turn_id}
         )
 
+    def check_campaign_invariants(self, campaign_id: str) -> InvariantReport:
+        """Run the full campaign-scoped invariant sweep."""
+        campaign = self.get_campaign(campaign_id)
+        if campaign is None:
+            raise StateNotFoundError(f"Campaign not found: {campaign_id}")
+        return check_invariants(
+            campaign,
+            list(self._db.cells.find({"campaign_id": campaign_id})),
+            list(self._db.entities.find({"campaign_id": campaign_id})),
+            list(self._db.events.find({"campaign_id": campaign_id})),
+            list(self._db.turns.find({"campaign_id": campaign_id})),
+            expected_key_count=int(campaign.get("config", {}).get("key_reservations", 6)),
+        )
+
     def reject_turn(
-        self, campaign_id: str, turn_id: str, result: TurnResult
-    ) -> TurnResult:
+        self, campaign_id: str, turn_id: str, result: EngineTurnResult
+    ) -> EngineTurnResult:
         stored = result.model_dump(mode="json")
         update = self._db.turns.update_one(
             {"campaign_id": campaign_id, "turn_id": turn_id, "status": "RECEIVED"},
@@ -262,7 +277,7 @@ class Repository:
             return result
         existing = self.get_turn(campaign_id, turn_id)
         if existing and existing.get("result"):
-            return TurnResult.model_validate(existing["result"])
+            return EngineTurnResult.model_validate(existing["result"])
         raise ConcurrencyConflict(f"Turn reservation lost: {turn_id}")
 
     def create_campaign(
@@ -377,6 +392,9 @@ class Repository:
                         "generated": True,
                         "generation_source": generation_source,
                         "generation_started_at": None,
+                        "static_environment_digest": static_environment_digest(
+                            room["static_environment"]
+                        ),
                     },
                     "$inc": {"version": 1},
                 },
@@ -443,8 +461,8 @@ class Repository:
         campaign_id: str,
         player_id: str,
         resolution: Resolution,
-        turn_result: TurnResult | None = None,
-    ) -> TurnResult | None:
+        turn_result: EngineTurnResult | None = None,
+    ) -> EngineTurnResult | None:
         """Commit one turn, using the A4 CAS path for versioned resolutions."""
         if resolution.expected_turn is not None:
             return self._commit_versioned_turn(
@@ -548,8 +566,8 @@ class Repository:
         campaign_id: str,
         player_id: str,
         resolution: Resolution,
-        turn_result: TurnResult | None,
-    ) -> TurnResult:
+        turn_result: EngineTurnResult | None,
+    ) -> EngineTurnResult:
         if resolution.expected_turn is None:
             raise ValueError("Versioned resolution requires expected_turn")
         if not resolution.accepted:
@@ -561,7 +579,7 @@ class Repository:
         if not turn_id:
             raise ValueError("Versioned resolution requires a turn_id")
         if turn_result is None:
-            turn_result = TurnResult(
+            turn_result = EngineTurnResult(
                 turn_id=turn_id,
                 turn_sequence=sequence,
                 accepted=True,
@@ -573,7 +591,7 @@ class Repository:
         if existing and existing.get("status") in {
             "REJECTED", "COMMITTED", "NARRATED", "NARRATION_FAILED"
         }:
-            return TurnResult.model_validate(existing["result"])
+            return EngineTurnResult.model_validate(existing["result"])
         if existing is None:
             self.begin_turn(campaign_id, turn_id, player_id, "", path="FAST")
 
@@ -679,8 +697,34 @@ class Repository:
         except DuplicateKeyError:
             replay = self.get_turn(campaign_id, turn_id)
             if replay and replay.get("result"):
-                return TurnResult.model_validate(replay["result"])
+                return EngineTurnResult.model_validate(replay["result"])
             raise
+        # Post-commit by design: invariant failures describe committed state
+        # and never roll it back (TDD §9.10).
+        try:
+            report = self.check_campaign_invariants(campaign_id)
+            invariant_document = report.to_document()
+        except Exception as exc:
+            # The canonical transaction has committed. Diagnostics must never
+            # turn that success into an apparent failed request/retry.
+            logger.exception(
+                "post-commit invariant sweep failed",
+                extra={"campaign_id": campaign_id, "turn_id": turn_id},
+            )
+            invariant_document = {
+                "checked": 0,
+                "failures": [{"invariant": "CHECKER", "message": str(exc)}],
+            }
+        try:
+            self._db.turns.update_one(
+                {"campaign_id": campaign_id, "turn_id": turn_id},
+                {"$set": {"invariants": invariant_document}},
+            )
+        except Exception:
+            logger.exception(
+                "post-commit invariant result could not be stored",
+                extra={"campaign_id": campaign_id, "turn_id": turn_id},
+            )
         return turn_result
 
 

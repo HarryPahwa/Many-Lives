@@ -66,7 +66,7 @@ def parse_fast_path(text: str, actor_id: str) -> ActionIntent | None:
             params={"direction": DIRECTION_MAP[arg]},
         )
 
-    if cmd in {"attack", "hit", "strike"} and arg:
+    if cmd in {"attack", "hit", "strike", "fight"} and arg:
         return ActionIntent(
             action_type=ActionType.ATTACK,
             actor_id=actor_id,
@@ -78,6 +78,41 @@ def parse_fast_path(text: str, actor_id: str) -> ActionIntent | None:
             action_type=ActionType.INTERACT,
             actor_id=actor_id,
             params={"query": arg},
+        )
+
+    if cmd == "search":
+        return ActionIntent(
+            action_type=ActionType.SEARCH,
+            actor_id=actor_id,
+            params={"query": arg} if arg else {},
+        )
+
+    if cmd == "talk" and arg:
+        query = arg.removeprefix("to ").strip()
+        return ActionIntent(
+            action_type=ActionType.TALK,
+            actor_id=actor_id,
+            params={"query": query},
+        )
+
+    social_commands = {
+        "persuade": ActionType.PERSUADE,
+        "deceive": ActionType.DECEIVE,
+        "intimidate": ActionType.INTIMIDATE,
+    }
+    if cmd in social_commands and arg:
+        return ActionIntent(
+            action_type=social_commands[cmd],
+            actor_id=actor_id,
+            params={"query": arg},
+        )
+
+    if cmd == "steal" and arg and " from " in arg:
+        item_query, target_query = arg.rsplit(" from ", 1)
+        return ActionIntent(
+            action_type=ActionType.STEAL,
+            actor_id=actor_id,
+            params={"query": item_query.strip(), "target_query": target_query.strip()},
         )
 
     if cmd == "look":

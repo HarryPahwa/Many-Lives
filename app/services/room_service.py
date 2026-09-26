@@ -176,6 +176,7 @@ def _materialize(
                 "name": dressed.name,
                 "description": dressed.description,
                 "location": {"kind": "CELL", "ref_id": cell_id, "slot": None},
+                "origin_cell_id": cell_id,
                 "character": {
                     "level": stats["level"],
                     "xp": 0,

@@ -25,6 +25,7 @@ def setup_enemy(*, hp=1):
         "schema_version": 1, "entity_id": "enemy_test", "entity_type": "ENEMY",
         "name": "test goblin", "description": "A test foe.",
         "location": {"kind": "CELL", "ref_id": created.spawn_cell_id, "slot": None},
+        "origin_cell_id": created.spawn_cell_id,
         "character": {"level": 1, "xp": 0, "pending_level_ups": 0,
                       "hp": hp, "max_hp": hp, "mp": 0, "max_mp": 0,
                       "attack": 2, "defense": 0, "speed": 3, "dodge_pct": 0,
@@ -59,6 +60,9 @@ def test_duplicate_turn_replays_result_and_applies_kill_once():
                                       "turn_id": "turn-a4-1"}) == 3
     assert db.turns.count_documents({"campaign_id": CAMPAIGN_ID,
                                      "turn_id": "turn-a4-1"}) == 1
+    turn = db.turns.find_one({"campaign_id": CAMPAIGN_ID, "turn_id": "turn-a4-1"})
+    assert turn["invariants"] == {"checked": 15, "failures": []}
+    assert repo.check_campaign_invariants(CAMPAIGN_ID).passed
 
 
 def test_enemy_damage_and_corpse_persist_through_fresh_repository():

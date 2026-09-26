@@ -29,6 +29,7 @@ def character(campaign_id, entity_id, cell_id, *, status="ALIVE", attack=3):
         "schema_version": 1, "entity_id": entity_id, "entity_type": "ENEMY",
         "name": entity_id, "description": "A persistent foe.",
         "location": {"kind": "CELL", "ref_id": cell_id, "slot": None},
+        "origin_cell_id": cell_id,
         "character": {"level": 1, "xp": 0, "pending_level_ups": 0,
                       "hp": 0 if status == "DEAD" else 8, "max_hp": 8,
                       "mp": 0, "max_mp": 0, "attack": attack, "defense": 0,
