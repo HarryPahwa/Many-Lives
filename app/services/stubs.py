@@ -183,6 +183,11 @@ class TurnRecord:
 class EnginePort(Protocol):
     """Developer A's seam (§27.1)."""
 
+    #: True when state outlives the process (a real database behind the seam).
+    #: The §20.2 restart tests assert persistence only against a durable
+    #: engine; they skip, loudly, against the in-memory stub.
+    DURABLE: bool
+
     def create_campaign(self, player_name: str, seed: int | None) -> CampaignSummary: ...
 
     def list_campaigns(self) -> list[CampaignSummary]: ...
@@ -363,6 +368,9 @@ class StubEngine:
 
     Replaced by `services/campaign_service.py` + `persistence/repositories.py`.
     """
+
+    # In-memory: state dies with the process. A's engine sets this True.
+    DURABLE = False
 
     def __init__(self) -> None:
         self._campaigns: dict[str, _Campaign] = {}

@@ -78,11 +78,22 @@ const document = {
   },
   addEventListener: () => {},
 };
+// localStorage that throws, as it does in a private window or with site data
+// blocked. The reconnect helpers must degrade rather than break play.
+const hostileStorage = {
+  getItem() {
+    throw new Error("storage blocked");
+  },
+  setItem() {
+    throw new Error("storage blocked");
+  },
+};
 const windowStub = {
   addEventListener: () => {},
   dispatchEvent: () => {},
   setTimeout: () => 0,
   clearTimeout: () => {},
+  localStorage: hostileStorage,
 };
 
 // --- load app.js ------------------------------------------------------------
@@ -97,7 +108,7 @@ const load = new Function(
   "crypto",
   "fetch",
   "CustomEvent",
-  `${source}\nreturn { renderMinimap, renderCharacter, renderRoom };`
+  `${source}\nreturn { renderMinimap, renderCharacter, renderRoom, rememberCampaign, lastCampaign };`
 );
 const ui = load(
   document,
@@ -234,6 +245,18 @@ assert.strictEqual(
   room.children[0].textContent,
   "<script>alert(1)</script>",
   "markup must land as literal text, not as parsed HTML"
+);
+
+// --- reconnect degrades when storage is unavailable ------------------------
+
+assert.doesNotThrow(
+  () => ui.rememberCampaign("cmp_abc"),
+  "a blocked localStorage must not break remembering a campaign"
+);
+assert.strictEqual(
+  ui.lastCampaign(),
+  null,
+  "a blocked localStorage must read back as null, not throw"
 );
 
 console.log("ui_render_check: all assertions passed");
