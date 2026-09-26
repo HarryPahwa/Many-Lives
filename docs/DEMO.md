@@ -132,7 +132,23 @@ Then type a fast-path command like `north` and reopen the inspector:
 > "And that turn cost nothing at all — it says *fast path, no context was
 > built and no model was asked*. Known commands never reach a model."
 
-### 2:30–3:00 · Policy metrics (only if P0.5 exists)
+### 2:30–2:50 · The bounded-context number
+
+If you have the terminal up, this is the strongest single fact available:
+
+```bash
+python scripts/seed_stress_history.py
+```
+
+> "Ten thousand stored events, and the context for one model call went from
+> 239 tokens to 246 — a hundredfold growth in history, three percent in
+> context, against a three-thousand-token budget. That is the Long Horizon
+> claim, measured rather than asserted."
+
+`docs/p07_result.json` holds the run, and the table is in the README, so it
+can be shown without running anything live.
+
+### 2:50–3:00 · Policy metrics (only if P0.5 exists)
 
 If Developer B's evaluator has run, show the stored before/after metrics for
 one policy promotion or rollback. **If it has not, say nothing about

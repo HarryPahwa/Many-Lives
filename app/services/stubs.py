@@ -227,6 +227,39 @@ class EnginePort(Protocol):
     def latest_turn(self, campaign_id: str) -> TurnRecord | None: ...
 
 
+class HistoryStore(Protocol):
+    """Optional engine capability used by the §16.4 stress measurement.
+
+    Deliberately **not** part of ``EnginePort``: the turn loop never needs it,
+    so Developer A is not obliged to implement it for the game to run. The
+    stress driver checks for it at runtime and says so plainly if it is
+    missing.
+    """
+
+    def append_events(self, campaign_id: str, events: list[dict[str, Any]]) -> int: ...
+
+    def append_memories(
+        self, campaign_id: str, memories: list[dict[str, Any]]
+    ) -> int: ...
+
+    def raw_events(self, campaign_id: str) -> list[dict[str, Any]]:
+        """The stored event log, for measurement read models."""
+        return self._require(campaign_id).events
+
+    def raw_memories(self, campaign_id: str) -> list[dict[str, Any]]:
+        return self._require(campaign_id).memories
+
+    def history_stats(self, campaign_id: str) -> dict[str, int]: ...
+
+
+def supports_history(engine: object) -> bool:
+    """Whether the installed engine can store bulk synthetic history."""
+    return all(
+        callable(getattr(engine, name, None))
+        for name in ("append_events", "append_memories", "history_stats")
+    )
+
+
 class HarnessPort(Protocol):
     """Developer B's seam (§27.1)."""
 
@@ -312,6 +345,11 @@ class _Campaign:
     updated_at: str = field(default_factory=_now)
     turns: dict[str, TurnRecord] = field(default_factory=dict)
     turn_order: list[str] = field(default_factory=list)
+    # Append-only consequential history (§9.5) and derived memories (§9.6).
+    # The orchestrator never reads these; they exist so stored history is a
+    # real, countable thing for the §16.4 bounded-context measurement.
+    events: list[dict[str, Any]] = field(default_factory=list)
+    memories: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _build_topology(rng: random.Random) -> dict[str, list[str]]:
@@ -749,6 +787,21 @@ class StubEngine:
                                 ch.disposition = None
 
         event_ids = [f"evt_{seq}_{i}" for i in range(len(resolution.event_types))]
+        for index, event_type in enumerate(resolution.event_types):
+            camp.events.append(
+                {
+                    "event_id": event_ids[index],
+                    "campaign_id": camp.campaign_id,
+                    "turn_sequence": seq,
+                    "event_index": index,
+                    "turn_id": turn_id,
+                    "type": event_type,
+                    "actor_id": camp.player_id,
+                    "cell_id": camp.player_cell,
+                    "summary": resolution.outcome_summary,
+                    "created_at": _now(),
+                }
+            )
         camp.current_turn = seq
         camp.updated_at = _now()
         return CommitResult(turn_sequence=seq, event_ids=event_ids)
@@ -769,6 +822,40 @@ class StubEngine:
         if not camp.turn_order:
             return None
         return camp.turns[camp.turn_order[-1]]
+
+    # ---- history store (§9.5, §9.6) — optional capability ----
+
+    def append_events(self, campaign_id: str, events: list[dict[str, Any]]) -> int:
+        """Append a batch of events. Mirrors an insert_many (§16.4)."""
+        camp = self._require(campaign_id)
+        camp.events.extend(events)
+        return len(camp.events)
+
+    def append_memories(
+        self, campaign_id: str, memories: list[dict[str, Any]]
+    ) -> int:
+        camp = self._require(campaign_id)
+        camp.memories.extend(memories)
+        return len(camp.memories)
+
+    def raw_events(self, campaign_id: str) -> list[dict[str, Any]]:
+        """The stored event log, for measurement read models."""
+        return self._require(campaign_id).events
+
+    def raw_memories(self, campaign_id: str) -> list[dict[str, Any]]:
+        return self._require(campaign_id).memories
+
+    def history_stats(self, campaign_id: str) -> dict[str, int]:
+        """Counts and an approximate stored size for the bounded-context table."""
+        camp = self._require(campaign_id)
+        events_bytes = sum(len(json.dumps(e, default=_encode)) for e in camp.events)
+        memory_bytes = sum(len(json.dumps(m, default=_encode)) for m in camp.memories)
+        return {
+            "events": len(camp.events),
+            "memories": len(camp.memories),
+            "turns": len(camp.turns),
+            "stored_bytes": events_bytes + memory_bytes,
+        }
 
 
 # ---------------------------------------------------------------------------

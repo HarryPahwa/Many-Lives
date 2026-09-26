@@ -101,6 +101,36 @@ python scripts/play_script.py            # 22 checks; exits 0/1/2
 Per TDD §32.2 item 7 this runs after every merge; a failure blocks further
 merges until it is fixed.
 
+## Bounded context: the measured result (P07)
+
+The Long Horizon claim is that stored history can grow without the per-call
+context growing with it. `scripts/seed_stress_history.py` measures exactly
+that against Developer B's real context builder:
+
+| Stored events | Memories | Stored | Context tokens | Build |
+|---:|---:|---:|---:|---:|
+| 0 | 0 | 0 KB | 117 | 0.04 ms |
+| 100 | 10 | 37 KB | 239 | 0.07 ms |
+| 1,000 | 100 | 380 KB | 243 | 0.24 ms |
+| 5,000 | 500 | 1,921 KB | 246 | 0.88 ms |
+| 10,000 | 1,000 | 3,850 KB | 246 | 1.64 ms |
+
+Stored history grew **100x** (100 to 10,000 events) while the context assembled for one model
+call grew **1.03x**, peaking at **246 tokens of a 3000-token budget**.
+
+The rise from an empty history to the first checkpoint is the policy's
+recent-event window filling once; it is excluded from the ratio and printed
+separately, because counting it as growth would describe the system wrongly.
+
+Reproduce it:
+
+```bash
+python scripts/seed_stress_history.py     # writes docs/p07_result.json
+```
+
+This shows bounded context under a large stored history. It is **not** a claim
+about a billion-token live campaign (TDD §16.4, §3.2).
+
 ## Layout (TDD §6.2, §25)
 
 ```
