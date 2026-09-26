@@ -3,7 +3,7 @@
 Proves the four-layer architecture: parse -> resolve -> commit -> read-back,
 entirely against mongomock (no Atlas, no network).
 
-The slice: a player at cell_0_0 moves north into cell_0_1 and the move sticks.
+The slice: a player at cell_0_1 moves north into cell_0_0 and the move sticks.
 """
 
 import mongomock
@@ -20,7 +20,7 @@ PLAYER_ID = "player_1"
 
 
 def setup_minimal_world(db: Database) -> None:
-    """Seed a campaign and one player at cell_0_0."""
+    """Seed a campaign, its two cells, and one player at cell_0_1."""
     db.campaigns.insert_one(
         {
             "_id": CAMPAIGN_ID,
@@ -29,6 +29,24 @@ def setup_minimal_world(db: Database) -> None:
             "current_turn": 0,
         }
     )
+    db.cells.insert_many(
+        [
+            {
+                "_id": f"{CAMPAIGN_ID}:cell_0_0",
+                "campaign_id": CAMPAIGN_ID,
+                "cell_id": "cell_0_0",
+                "visited_by": [],
+                "version": 0,
+            },
+            {
+                "_id": f"{CAMPAIGN_ID}:cell_0_1",
+                "campaign_id": CAMPAIGN_ID,
+                "cell_id": "cell_0_1",
+                "visited_by": [PLAYER_ID],
+                "version": 0,
+            },
+        ]
+    )
     db.entities.insert_one(
         {
             "_id": f"{CAMPAIGN_ID}:{PLAYER_ID}",
@@ -36,15 +54,24 @@ def setup_minimal_world(db: Database) -> None:
             "schema_version": 1,
             "entity_id": PLAYER_ID,
             "entity_type": "PLAYER",
-            "location": {"kind": "CELL", "ref_id": "cell_0_0"},
+            "location": {"kind": "CELL", "ref_id": "cell_0_1"},
+            "player": {
+                "discovered_cell_ids": ["cell_0_1"],
+                "new_cells_since_death": 0,
+            },
+            "version": 0,
         }
     )
+
+
+def immediate_transaction(callback):
+    return callback(None)
 
 
 def test_move_north_commits_location_and_event():
     client = mongomock.MongoClient()
     db = client.dungeon
-    repo = Repository(db)
+    repo = Repository(db, transaction_runner=immediate_transaction)
     setup_minimal_world(db)
 
     # 1. Parse the command.
@@ -57,7 +84,7 @@ def test_move_north_commits_location_and_event():
     resolution = resolve_action(
         intent,
         topology=MINIMAL_TOPOLOGY,
-        current_cell_id="cell_0_0",
+        current_cell_id="cell_0_1",
         campaign_id=CAMPAIGN_ID,
         turn_sequence=1,
         turn_id="turn-00000000-0000-0000-0000-000000000001",
@@ -70,13 +97,13 @@ def test_move_north_commits_location_and_event():
     # 4. Read back and verify state + history.
     player = repo.get_entity(CAMPAIGN_ID, PLAYER_ID)
     assert player is not None
-    assert player["location"]["ref_id"] == "cell_0_1"
+    assert player["location"]["ref_id"] == "cell_0_0"
 
     events = list(db.events.find({"campaign_id": CAMPAIGN_ID}))
     assert len(events) == 1
     assert events[0]["type"] == "PLAYER_MOVED"
-    assert events[0]["payload"]["from_cell"] == "cell_0_0"
-    assert events[0]["payload"]["to_cell"] == "cell_0_1"
+    assert events[0]["payload"]["from_cell"] == "cell_0_1"
+    assert events[0]["payload"]["to_cell"] == "cell_0_0"
 
     campaign = repo.get_campaign(CAMPAIGN_ID)
     assert campaign["current_turn"] == 1
@@ -85,17 +112,17 @@ def test_move_north_commits_location_and_event():
 def test_move_into_wall_is_rejected():
     client = mongomock.MongoClient()
     db = client.dungeon
-    repo = Repository(db)
+    repo = Repository(db, transaction_runner=immediate_transaction)
     setup_minimal_world(db)
 
-    # Moving south from cell_0_0 has no adjacency entry -> blocked.
-    intent = parse_fast_path("south", PLAYER_ID)
+    # Moving east from cell_0_1 has no adjacency entry -> blocked.
+    intent = parse_fast_path("east", PLAYER_ID)
     assert intent is not None
 
     resolution = resolve_action(
         intent,
         topology=MINIMAL_TOPOLOGY,
-        current_cell_id="cell_0_0",
+        current_cell_id="cell_0_1",
         campaign_id=CAMPAIGN_ID,
         turn_sequence=1,
         turn_id="turn-00000000-0000-0000-0000-000000000002",
@@ -105,5 +132,5 @@ def test_move_into_wall_is_rejected():
 
     # No commit happened, so nothing changed.
     player = repo.get_entity(CAMPAIGN_ID, PLAYER_ID)
-    assert player["location"]["ref_id"] == "cell_0_0"
+    assert player["location"]["ref_id"] == "cell_0_1"
     assert db.events.count_documents({"campaign_id": CAMPAIGN_ID}) == 0

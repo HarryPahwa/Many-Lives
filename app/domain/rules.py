@@ -6,7 +6,18 @@ documents) as input.
 """
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, Mapping, Protocol, Sequence
+
+from app.domain.combat import hostile_order, resolve_attack
+from app.domain.death import award_xp, kill_xp, resolve_player_death
+from app.domain.door import can_enter_boss, claim_treasure, submit_keys
+from app.domain.inventory import (
+    drop_item,
+    equip_item,
+    take_item,
+    unequip_item,
+    use_item,
+)
 
 from app.domain.types import (
     ActionIntent,
@@ -15,7 +26,24 @@ from app.domain.types import (
     EventType,
     MemoryStatus,
 )
+from app.domain.rng import TurnRng
 from app.world.topology import Topology
+
+
+@dataclass(frozen=True)
+class DocumentMutation:
+    collection: Literal["campaigns", "cells", "entities"]
+    document_id: str
+    expected_version: int
+    set_fields: Mapping[str, Any] = field(default_factory=dict)
+    inc_fields: Mapping[str, int] = field(default_factory=dict)
+    add_to_set_fields: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DocumentInsert:
+    collection: Literal["entities"]
+    document: Mapping[str, Any]
 
 
 @dataclass
@@ -25,15 +53,44 @@ class Resolution:
     effects: list[dict[str, Any]] = field(default_factory=list)
     events: list[Event] = field(default_factory=list)
     state_updates: dict[str, Any] = field(default_factory=dict)
+    mutations: list[DocumentMutation] = field(default_factory=list)
+    inserts: list[DocumentInsert] = field(default_factory=list)
+    touched_entity_ids: list[str] = field(default_factory=list)
+    touched_cell_ids: list[str] = field(default_factory=list)
+    expected_turn: int | None = None
+    expected_campaign_version: int | None = None
+    turn_id: str | None = None
+    current_cell_id: str | None = None
     outcome_summary: str = ""
 
 
 DIRECTION_OFFSETS = {
-    "NORTH": (0, 1),
-    "SOUTH": (0, -1),
+    "NORTH": (0, -1),
+    "SOUTH": (0, 1),
     "EAST": (1, 0),
     "WEST": (-1, 0),
 }
+
+
+class WorldSnapshot(Protocol):
+    campaign: Mapping[str, Any]
+    player: Mapping[str, Any]
+    current_cell: Mapping[str, Any]
+    destination_cell: Mapping[str, Any] | None
+    characters: Sequence[Mapping[str, Any]]
+    items: Sequence[Mapping[str, Any]]
+    container_items: Sequence[Mapping[str, Any]]
+    owned_items: Sequence[Mapping[str, Any]]
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_plain(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return {_plain(item) for item in value}
+    return value
 
 
 def parse_cell_coords(cell_id: str) -> tuple[int, int]:
@@ -124,3 +181,466 @@ def resolve_action(
         )
 
     return Resolution(accepted=False, reason=f"Unsupported action {intent.action_type}")
+
+
+def resolve_inventory_action(
+    intent: ActionIntent,
+    *,
+    items: Sequence[Mapping[str, Any]],
+    player: Mapping[str, Any],
+    current_cell_id: str,
+    campaign_id: str,
+    turn_sequence: int,
+    turn_id: str,
+    active_guard_ids: Sequence[str] = (),
+    open_container_ids: Sequence[str] = (),
+    lootable_owner_ids: Sequence[str] = (),
+    new_item_id: str | None = None,
+) -> Resolution:
+    """Resolve an A3 inventory intent against supplied immutable snapshots."""
+    query = str(intent.params.get("item_id") or intent.params.get("query") or "")
+    matches = [
+        item for item in items
+        if item.get("entity_id") == query
+        or str(item.get("name", "")).casefold() == query.casefold()
+    ]
+    if len(matches) != 1:
+        return Resolution(False, "Item target is missing or ambiguous.")
+    item_id = matches[0]["entity_id"]
+    common = {"items": items, "item_id": item_id, "player_id": intent.actor_id}
+    if intent.action_type == ActionType.TAKE_ITEM:
+        result = take_item(
+            **common,
+            current_cell_id=current_cell_id,
+            quantity=int(intent.params["quantity"]) if "quantity" in intent.params else None,
+            active_guard_ids=active_guard_ids,
+            open_container_ids=open_container_ids,
+            lootable_owner_ids=lootable_owner_ids,
+            new_item_id=new_item_id,
+        )
+    elif intent.action_type == ActionType.DROP_ITEM:
+        result = drop_item(
+            **common,
+            current_cell_id=current_cell_id,
+            quantity=int(intent.params["quantity"]) if "quantity" in intent.params else None,
+            new_item_id=new_item_id,
+        )
+    elif intent.action_type == ActionType.EQUIP:
+        result = equip_item(**common)
+    elif intent.action_type == ActionType.UNEQUIP:
+        result = unequip_item(**common, current_cell_id=current_cell_id)
+    elif intent.action_type == ActionType.USE_ITEM:
+        character = player["character"]
+        result = use_item(
+            **common,
+            current_mp=character["mp"],
+            max_mp=character["max_mp"],
+        )
+    else:
+        return Resolution(False, f"Unsupported inventory action {intent.action_type}")
+    if not result.accepted:
+        return Resolution(False, result.reason)
+
+    events = [
+        Event(
+            campaign_id=campaign_id,
+            event_id=f"evt_{turn_sequence}_{index}",
+            turn_sequence=turn_sequence,
+            event_index=index,
+            turn_id=turn_id,
+            type=EventType(event_type),
+            actor_id=intent.actor_id,
+            entity_ids=[intent.actor_id, item_id],
+            cell_id=current_cell_id,
+            payload={"item_id": item_id},
+            summary=f"{event_type.replace('_', ' ').title()}: {item_id}.",
+            memory_status=MemoryStatus.NOT_REQUIRED,
+        )
+        for index, event_type in enumerate(result.event_types)
+    ]
+    originals = {item["entity_id"]: item for item in items}
+    changed_items = [
+        item
+        for item in result.items
+        if item["entity_id"] not in originals
+        or item.get("location") != originals[item["entity_id"]].get("location")
+        or item.get("item") != originals[item["entity_id"]].get("item")
+    ]
+    updates: dict[str, Any] = {"item_documents": changed_items}
+    if result.player_mp is not None:
+        updates["player_mp"] = result.player_mp
+    return Resolution(True, events=events, state_updates=updates,
+                      outcome_summary=events[-1].summary if events else "Inventory updated.")
+
+
+def resolve_world_action(
+    intent: ActionIntent,
+    view: WorldSnapshot,
+    *,
+    turn_id: str,
+) -> Resolution:
+    """Resolve A4 combat, movement, waiting, and boss-door actions."""
+    campaign = _plain(view.campaign)
+    player = _plain(view.player)
+    current_cell = _plain(view.current_cell)
+    destination = _plain(view.destination_cell) if view.destination_cell else None
+    characters = [_plain(entity) for entity in view.characters]
+    all_items = [
+        *(_plain(item) for item in view.items),
+        *(_plain(item) for item in view.container_items),
+        *(_plain(item) for item in view.owned_items),
+    ]
+    # Queries can overlap view components; identity is authoritative.
+    all_items = list({item["entity_id"]: item for item in all_items}.values())
+    original_campaign = _plain(view.campaign)
+    original_player = _plain(view.player)
+    original_characters = {entity["entity_id"]: _plain(entity) for entity in view.characters}
+    original_items = {item["entity_id"]: _plain(item) for item in all_items}
+    sequence = int(campaign["current_turn"]) + 1
+    rng = TurnRng(int(campaign["seed"]), sequence)
+    events: list[Event] = []
+    touched_cells: set[str] = set()
+    inserted_items: list[dict[str, Any]] = []
+
+    def event(
+        event_type: EventType,
+        actor_id: str,
+        entity_ids: list[str],
+        cell_id: str,
+        payload: Mapping[str, Any],
+        summary: str,
+        *,
+        memory: MemoryStatus = MemoryStatus.NOT_REQUIRED,
+    ) -> None:
+        events.append(
+            Event(
+                campaign_id=campaign["_id"],
+                event_id=f"evt_{sequence}_{len(events)}",
+                turn_sequence=sequence,
+                event_index=len(events),
+                turn_id=turn_id,
+                type=event_type,
+                actor_id=actor_id,
+                entity_ids=entity_ids,
+                cell_id=cell_id,
+                payload=dict(payload),
+                summary=summary,
+                memory_status=memory,
+            )
+        )
+
+    def attack(attacker: dict[str, Any], defender: dict[str, Any], purpose: str) -> bool:
+        outcome = resolve_attack(attacker, defender, items=all_items, rng=rng, purpose=purpose)
+        defender["character"]["hp"] = outcome.hp_after
+        if defender.get("entity_type") != "PLAYER" and outcome.killed:
+            defender["character"]["status"] = "DEAD"
+        payload = {
+            "attacker_id": outcome.attacker_id,
+            "defender_id": outcome.defender_id,
+            "dodged": outcome.dodged,
+            "damage": outcome.damage,
+            "hp_before": outcome.hp_before,
+            "hp_after": outcome.hp_after,
+            "effective_dodge": outcome.effective_dodge,
+            "weapon_bonus": outcome.weapon_bonus,
+            "armor_bonus": outcome.armor_bonus,
+            "variance": outcome.variance,
+            "rolls": [record.__dict__ for record in outcome.rolls],
+        }
+        event(
+            EventType.ATTACK_RESOLVED,
+            attacker["entity_id"],
+            [attacker["entity_id"], defender["entity_id"]],
+            defender["location"]["ref_id"],
+            payload,
+            f"{attacker['entity_id']} attacked {defender['entity_id']} for {outcome.damage} damage.",
+            memory=MemoryStatus.PENDING,
+        )
+        return outcome.killed
+
+    def apply_death(killer_ids: Sequence[str], death_cell: str) -> None:
+        nonlocal player, all_items, inserted_items
+        living_ids = [
+            entity["entity_id"]
+            for entity in hostile_order(characters, player["entity_id"], turn_sequence=sequence)
+            if entity["location"]["ref_id"] == death_cell
+        ]
+        outcome = resolve_player_death(
+            player,
+            all_items,
+            death_cell_id=death_cell,
+            living_hostile_ids=living_ids,
+            rng=rng,
+            turn_sequence=sequence,
+        )
+        player = outcome.player
+        all_items = list(outcome.items)
+        inserted_items = [item for item in all_items if item["entity_id"] not in original_items]
+        event(EventType.PLAYER_DIED, player["entity_id"], [player["entity_id"], *killer_ids],
+              death_cell, {"killer_ids": list(killer_ids), "death_cell": death_cell},
+              f"{player['entity_id']} died.", memory=MemoryStatus.PENDING)
+        if outcome.dropped_item_id:
+            event(EventType.ITEM_DROPPED, player["entity_id"],
+                  [player["entity_id"], outcome.dropped_item_id], death_cell,
+                  {"item_id": outcome.dropped_item_id, "quantity": 1,
+                   "guarded_by": living_ids},
+                  f"{player['entity_id']} dropped {outcome.dropped_item_id}.")
+        event(EventType.XP_GAINED, player["entity_id"], [player["entity_id"]], death_cell,
+              {"amount": outcome.death_xp, "reason": "DEATH", "pct": outcome.death_xp_pct,
+               "exploration_pct": outcome.exploration_pct, "combat_pct": outcome.combat_pct},
+              f"{player['entity_id']} gained {outcome.death_xp} XP.")
+        event(EventType.PLAYER_RESPAWNED, player["entity_id"], [player["entity_id"]],
+              player["location"]["ref_id"], {"spawn_cell_id": player["location"]["ref_id"]},
+              f"{player['entity_id']} respawned.")
+
+    def environment_response(cell_id: str, *, entering: bool = False) -> bool:
+        killers: list[str] = []
+        ordered = [entity for entity in hostile_order(characters, player["entity_id"],
+                                                       turn_sequence=sequence)
+                   if entity["location"]["ref_id"] == cell_id]
+        if entering:
+            ordered = [entity for entity in ordered
+                       if entity["character"]["speed"] > player["character"]["speed"]]
+        for hostile in ordered:
+            killed = attack(hostile, player, "env")
+            if killed:
+                killers.append(hostile["entity_id"])
+                apply_death(killers, cell_id)
+                return True
+        return False
+
+    current_id = current_cell["cell_id"]
+    action = intent.action_type
+    if action == ActionType.LOOK:
+        pass
+    elif action == ActionType.WAIT:
+        environment_response(current_id)
+    elif action == ActionType.ATTACK:
+        query = str(intent.params.get("target_id") or intent.params.get("query") or "")
+        candidates = [entity for entity in characters
+                      if entity["location"]["ref_id"] == current_id
+                      and entity["character"]["status"] == "ALIVE"
+                      and entity["entity_id"] != player["entity_id"]
+                      and (entity["entity_id"] == query
+                           or entity.get("name", "").casefold() == query.casefold())]
+        if len(candidates) != 1:
+            return Resolution(False, "Attack target is missing or ambiguous.")
+        target = candidates[0]
+        disposition_change: tuple[str, str, int, int] | None = None
+        if target["entity_type"] == "NPC":
+            dispositions = target["character"].setdefault("disposition", {})
+            previous = dispositions.get(player["entity_id"], {
+                "state": "NEUTRAL", "trust": 0, "reason_event_ids": []
+            })
+            before_state = previous.get("state", "NEUTRAL")
+            before_trust = int(previous.get("trust", 0))
+            after_trust = max(-100, before_trust - 60)
+            after_state = before_state
+            if after_trust <= -50:
+                after_state = "HOSTILE"
+            elif before_state == "NEUTRAL" and after_trust < -20:
+                after_state = "WARY"
+            elif before_state == "FRIENDLY" and after_trust < 20:
+                after_state = "NEUTRAL"
+            reason_ids = list(previous.get("reason_event_ids", ()))
+            reason_ids.append(f"evt_{sequence}_{len(events)}")
+            dispositions[player["entity_id"]] = {
+                "state": after_state,
+                "trust": after_trust,
+                "reason_event_ids": reason_ids[-10:],
+            }
+            disposition_change = (before_state, after_state, before_trust, after_trust)
+        killed = attack(player, target, "combat")
+        dealt = events[-1].payload["damage"]
+        if disposition_change is not None:
+            before_state, after_state, before_trust, after_trust = disposition_change
+            events[-1].payload["disposition"] = {
+                "trust_before": before_trust,
+                "trust_after": after_trust,
+            }
+            if before_state != after_state:
+                event(EventType.DISPOSITION_CHANGED, player["entity_id"],
+                      [player["entity_id"], target["entity_id"]], current_id,
+                      {"entity_id": target["entity_id"], "before": before_state,
+                       "after": after_state, "trust": after_trust},
+                      f"{target['entity_id']} became {after_state.lower()}.",
+                      memory=MemoryStatus.PENDING)
+        player["player"]["damage_dealt_since_death"] += dealt
+        if killed:
+            event(EventType.ENTITY_DIED, player["entity_id"],
+                  [player["entity_id"], target["entity_id"]], current_id,
+                  {"entity_id": target["entity_id"]}, f"{target['entity_id']} died.",
+                  memory=MemoryStatus.PENDING)
+            xp = kill_xp(player["character"]["level"], target["character"]["level"],
+                         boss=target["entity_type"] == "BOSS")
+            award = award_xp(player["character"], xp)
+            player["character"]["xp"] = award.xp_after
+            player["character"]["pending_level_ups"] = award.pending_level_ups_after
+            player["player"]["kills"] += 1
+            event(EventType.XP_GAINED, player["entity_id"],
+                  [player["entity_id"], target["entity_id"]], current_id,
+                  {"amount": xp, "reason": "KILL", "target_id": target["entity_id"]},
+                  f"{player['entity_id']} gained {xp} XP.")
+        environment_response(current_id)
+    elif action in {ActionType.MOVE, ActionType.FLEE}:
+        direction = intent.params.get("direction")
+        if direction not in DIRECTION_OFFSETS:
+            return Resolution(False, f"Invalid direction '{direction}'")
+        x, y = parse_cell_coords(current_id)
+        dx, dy = DIRECTION_OFFSETS[str(direction)]
+        target_id = format_cell_id(x + dx, y + dy)
+        topology = Topology(campaign["topology"])
+        if not topology.is_adjacent(current_id, target_id):
+            return Resolution(False, f"A wall blocks the way to the {str(direction).lower()}.")
+        if destination is None or destination["cell_id"] != target_id:
+            return Resolution(False, "Destination snapshot is required before movement.")
+        if not can_enter_boss(campaign, target_id):
+            return Resolution(False, "The sealed boss door blocks the way.")
+        source_hostiles = [entity for entity in hostile_order(characters, player["entity_id"],
+                                                               turn_sequence=sequence)
+                           if entity["location"]["ref_id"] == current_id]
+        if action == ActionType.FLEE or source_hostiles:
+            if source_hostiles and attack(source_hostiles[0], player, "env"):
+                apply_death([source_hostiles[0]["entity_id"]], current_id)
+            else:
+                player["location"] = {"kind": "CELL", "ref_id": target_id, "slot": None}
+        else:
+            player["location"] = {"kind": "CELL", "ref_id": target_id, "slot": None}
+        if player["location"]["ref_id"] == target_id:
+            discovered = target_id not in player["player"]["discovered_cell_ids"]
+            if discovered:
+                player["player"]["discovered_cell_ids"].append(target_id)
+                player["player"]["new_cells_since_death"] += 1
+            destination["visited_by"] = sorted(set(destination.get("visited_by", ())) | {player["entity_id"]})
+            destination["last_updated_turn"] = sequence
+            touched_cells.add(target_id)
+            event(EventType.PLAYER_MOVED, player["entity_id"], [player["entity_id"]], target_id,
+                  {"from_cell": current_id, "to_cell": target_id, "direction": direction},
+                  f"Player moved {str(direction).lower()} to {target_id}.")
+            if discovered:
+                event(EventType.CELL_DISCOVERED, player["entity_id"], [player["entity_id"]],
+                      target_id, {"cell_id": target_id}, f"Discovered {target_id}.")
+            environment_response(target_id, entering=True)
+    elif action in {
+        ActionType.TAKE_ITEM,
+        ActionType.DROP_ITEM,
+        ActionType.EQUIP,
+        ActionType.UNEQUIP,
+        ActionType.USE_ITEM,
+    }:
+        active_guards = [entity["entity_id"] for entity in characters
+                         if entity["character"]["status"] == "ALIVE"]
+        lootable_owners = [entity["entity_id"] for entity in characters
+                           if entity["character"]["status"] in {"DEAD", "INCAPACITATED"}]
+        open_containers = [feature["feature_id"] for feature in current_cell.get("features", ())
+                           if feature.get("state", {}).get("open_state") == "open"]
+        query = str(intent.params.get("item_id") or intent.params.get("query") or "")
+        target = next((item for item in all_items
+                       if item["entity_id"] == query
+                       or item.get("name", "").casefold() == query.casefold()), None)
+        if target and action == ActionType.TAKE_ITEM and target["item"].get("subtype") == "TREASURE":
+            boss_alive = any(entity["entity_type"] == "BOSS"
+                             and entity["character"]["status"] == "ALIVE"
+                             for entity in characters)
+            if boss_alive:
+                return Resolution(False, "The treasure remains guarded while the boss lives.")
+        inventory_resolution = resolve_inventory_action(
+            intent,
+            items=all_items,
+            player=player,
+            current_cell_id=current_id,
+            campaign_id=campaign["_id"],
+            turn_sequence=sequence,
+            turn_id=turn_id,
+            active_guard_ids=active_guards,
+            open_container_ids=open_containers,
+            lootable_owner_ids=lootable_owners,
+            new_item_id=f"item_split_{sequence}",
+        )
+        if not inventory_resolution.accepted:
+            return inventory_resolution
+        all_items = inventory_resolution.state_updates["item_documents"] + [
+            item for item in all_items
+            if item["entity_id"] not in {
+                changed["entity_id"]
+                for changed in inventory_resolution.state_updates["item_documents"]
+            }
+        ]
+        if "player_mp" in inventory_resolution.state_updates:
+            player["character"]["mp"] = inventory_resolution.state_updates["player_mp"]
+        events.extend(inventory_resolution.events)
+        if target and action == ActionType.TAKE_ITEM and target["item"].get("subtype") == "TREASURE":
+            campaign = claim_treasure(campaign, player_id=player["entity_id"], boss_alive=False)
+            event(EventType.TREASURE_CLAIMED, player["entity_id"],
+                  [player["entity_id"], target["entity_id"]], current_id,
+                  {"treasure_id": target["entity_id"]}, "The boss treasure was claimed.")
+        environment_response(current_id)
+    elif action == ActionType.INTERACT and str(intent.params.get("query", "")).replace(" ", "_") == "boss_door":
+        topology = Topology(campaign["topology"])
+        if campaign["boss_cell_id"] not in topology.neighbors(current_id):
+            return Resolution(False, "The boss door is not reachable from here.")
+        outcome = submit_keys(campaign, all_items, player_id=player["entity_id"])
+        if not outcome.submitted_item_ids:
+            return Resolution(False, "You carry no unsubmitted keys.")
+        campaign = outcome.campaign
+        all_items = list(outcome.items)
+        event(EventType.KEYS_SUBMITTED, player["entity_id"],
+              [player["entity_id"], *outcome.submitted_item_ids], current_id,
+              {"key_item_ids": list(outcome.submitted_item_ids)},
+              f"Submitted {len(outcome.submitted_item_ids)} keys.")
+        if outcome.unlocked_now:
+            event(EventType.BOSS_DOOR_UNLOCKED, player["entity_id"], [player["entity_id"]],
+                  current_id, {"boss_cell_id": campaign["boss_cell_id"]},
+                  "The boss door unlocked.")
+        environment_response(current_id)
+    else:
+        return Resolution(False, f"Unsupported A4 action {action}")
+
+    mutations: list[DocumentMutation] = []
+    campaign_fields = {key: campaign[key] for key in ("boss_door", "status", "winner_player_id")
+                       if campaign.get(key) != original_campaign.get(key)}
+    if campaign_fields:
+        mutations.append(DocumentMutation("campaigns", campaign["_id"], campaign["version"],
+                                          set_fields=campaign_fields))
+    if player != original_player:
+        mutations.append(DocumentMutation(
+            "entities", player["entity_id"], original_player["version"],
+            set_fields={"location": player["location"], "character": player["character"],
+                        "player": player["player"], "updated_turn": sequence},
+        ))
+    for character in characters:
+        original = original_characters[character["entity_id"]]
+        if character != original:
+            mutations.append(DocumentMutation(
+                "entities", character["entity_id"], original["version"],
+                set_fields={"character": character["character"], "updated_turn": sequence},
+            ))
+    for item in all_items:
+        original = original_items.get(item["entity_id"])
+        if original is not None and item != original:
+            mutations.append(DocumentMutation(
+                "entities", item["entity_id"], original["version"],
+                set_fields={"location": item["location"], "item": item["item"],
+                            "updated_turn": sequence},
+            ))
+    if destination is not None and destination["cell_id"] in touched_cells:
+        mutations.append(DocumentMutation(
+            "cells", destination["cell_id"], int(view.destination_cell["version"]),
+            set_fields={"visited_by": destination["visited_by"],
+                        "last_updated_turn": destination["last_updated_turn"]},
+        ))
+    inserts = [DocumentInsert("entities", item) for item in inserted_items]
+    return Resolution(
+        True,
+        events=events,
+        mutations=mutations,
+        inserts=inserts,
+        touched_entity_ids=sorted({mutation.document_id for mutation in mutations
+                                   if mutation.collection == "entities"}),
+        touched_cell_ids=sorted(touched_cells),
+        expected_turn=int(original_campaign["current_turn"]),
+        expected_campaign_version=int(original_campaign["version"]),
+        turn_id=turn_id,
+        current_cell_id=player["location"]["ref_id"],
+        outcome_summary=events[-1].summary if events else f"Looking around {current_id}.",
+    )
