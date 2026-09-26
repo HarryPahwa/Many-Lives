@@ -60,6 +60,7 @@ class Resolution:
     inserts: list[DocumentInsert] = field(default_factory=list)
     touched_entity_ids: list[str] = field(default_factory=list)
     touched_cell_ids: list[str] = field(default_factory=list)
+    rejected_effects: list[dict[str, Any]] = field(default_factory=list)
     expected_turn: int | None = None
     expected_campaign_version: int | None = None
     turn_id: str | None = None
@@ -105,6 +106,84 @@ def parse_cell_coords(cell_id: str) -> tuple[int, int]:
 def format_cell_id(x: int, y: int) -> str:
     """Format (4, 6) into 'cell_4_6'."""
     return f"cell_{x}_{y}"
+
+
+MAX_FEATURES_PER_CELL = 12
+
+FEATURE_STATE_VALUES: Mapping[str, frozenset[str]] = {
+    "open_state": frozenset({"open", "closed"}),
+    "lock_state": frozenset({"locked", "unlocked"}),
+    "condition": frozenset({"intact", "broken"}),
+    "orientation": frozenset({"upright", "overturned"}),
+    "light_state": frozenset({"lit", "unlit"}),
+}
+
+FEATURE_PROPERTIES = frozenset({
+    "flammable", "breakable", "movable", "heavy", "container", "concealing", "light_source",
+})
+
+
+def _feature_supports(feature: Mapping[str, Any], key: str) -> bool:
+    """Property prerequisites for a state key (§4.12)."""
+    properties = set(feature.get("properties", ()))
+    if key == "orientation":
+        return "movable" in properties
+    if key == "condition":
+        return "breakable" in properties
+    if key == "light_state":
+        return bool(properties & {"light_source", "flammable"})
+    if key in {"open_state", "lock_state"}:
+        return "container" in properties or str(feature.get("kind", "")).casefold() == "door"
+    return False
+
+
+def find_feature(features: Sequence[Mapping[str, Any]], query: str) -> Mapping[str, Any] | None:
+    """Match a feature in the cell by id, name, or kind; ambiguity is no match."""
+    wanted = query.strip().casefold()
+    for field_name in ("feature_id", "name", "kind"):
+        matches = [feature for feature in features
+                   if str(feature.get(field_name, "")).casefold() == wanted]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            return None
+    return None
+
+
+def validate_feature_state_change(
+    features: Sequence[Mapping[str, Any]], effect: Mapping[str, Any]
+) -> tuple[Mapping[str, Any] | None, str | None]:
+    """Return the target feature, or a player-facing reason the change cannot happen."""
+    feature = find_feature(features, str(effect.get("feature_id", "")))
+    if feature is None:
+        return None, "You don't see that here."
+    key, value = str(effect.get("key", "")), str(effect.get("value", ""))
+    name = feature.get("name", "it")
+    if value not in FEATURE_STATE_VALUES.get(key, ()):
+        return None, f"You can't do that to the {name}."
+    if not _feature_supports(feature, key):
+        return None, f"The {name} can't be made {value}."
+    if feature.get("state", {}).get(key) == value:
+        return None, f"The {name} is already {value}."
+    return feature, None
+
+
+def validate_created_feature(
+    features: Sequence[Mapping[str, Any]], effect: Mapping[str, Any]
+) -> str | None:
+    """Return a player-facing reason a CREATE_FEATURE effect is invalid, else None."""
+    if len(features) >= MAX_FEATURES_PER_CELL:
+        return "There is no room left here for anything more."
+    name = str(effect.get("name", "")).strip()
+    if not name or len(name) > 40:
+        return "That doesn't leave a mark worth noting."
+    if not set(effect.get("properties", ())).issubset(FEATURE_PROPERTIES):
+        return "That doesn't leave a mark worth noting."
+    state = {key: value for key, value in dict(effect.get("state") or {}).items()
+             if value is not None}
+    if any(value not in FEATURE_STATE_VALUES.get(key, ()) for key, value in state.items()):
+        return "That doesn't leave a mark worth noting."
+    return None
 
 
 def resolve_action(
@@ -208,7 +287,7 @@ def resolve_inventory_action(
         or str(item.get("name", "")).casefold() == query.casefold()
     ]
     if len(matches) != 1:
-        return Resolution(False, "Item target is missing or ambiguous.")
+        return Resolution(False, "You don't see that item here.")
     item_id = matches[0]["entity_id"]
     common = {"items": items, "item_id": item_id, "player_id": intent.actor_id}
     if intent.action_type == ActionType.TAKE_ITEM:
@@ -283,6 +362,12 @@ def resolve_world_action(
     turn_id: str,
 ) -> Resolution:
     """Resolve A4 combat, movement, waiting, and boss-door actions."""
+    # Adjudicated intents name entities by ID in `targets`; fast-path intents use `query`.
+    if intent.targets and "query" not in intent.params:
+        fallback: dict[str, str | int] = {"query": intent.targets[0]}
+        if intent.action_type == ActionType.STEAL and len(intent.targets) > 1:
+            fallback["target_query"] = intent.targets[1]
+        intent = intent.model_copy(update={"params": {**fallback, **intent.params}})
     campaign = _plain(view.campaign)
     player = _plain(view.player)
     current_cell = _plain(view.current_cell)
@@ -304,6 +389,8 @@ def resolve_world_action(
     events: list[Event] = []
     touched_cells: set[str] = set()
     inserted_items: list[dict[str, Any]] = []
+    rejected_effects: list[dict[str, Any]] = []
+    current_cell_changed = False
 
     def event(
         event_type: EventType,
@@ -455,6 +542,10 @@ def resolve_world_action(
     action = intent.action_type
     if action == ActionType.LOOK:
         pass
+    elif action == ActionType.WAIT and intent.params.get("debug_die"):
+        # Debug-only: the orchestrator sets this flag solely when DEBUG_ENDPOINTS is on.
+        player["character"]["hp"] = 0
+        apply_death([], current_id)
     elif action == ActionType.WAIT:
         environment_response(current_id)
     elif action == ActionType.SEARCH:
@@ -477,9 +568,12 @@ def resolve_world_action(
     elif action == ActionType.TALK:
         npc = find_character(str(intent.params.get("query", "")), npc_only=True)
         if npc is None:
-            return Resolution(False, "NPC target is missing or ambiguous.")
+            return Resolution(False, "There's no one here by that name to speak with.")
+        dialogue: dict[str, Any] = {"npc_id": npc["entity_id"]}
+        if intent.params.get("utterance"):
+            dialogue["utterance"] = str(intent.params["utterance"])
         event(EventType.DIALOGUE, player["entity_id"], [player["entity_id"], npc["entity_id"]],
-              current_id, {"npc_id": npc["entity_id"]}, f"Talked with {npc['entity_id']}.",
+              current_id, dialogue, f"Talked with {npc['entity_id']}.",
               memory=MemoryStatus.PENDING)
         state, trust = disposition_for(npc)
         if state != DispositionState.HOSTILE and trust >= 20:
@@ -500,18 +594,22 @@ def resolve_world_action(
     elif action in {ActionType.PERSUADE, ActionType.DECEIVE, ActionType.INTIMIDATE}:
         npc = find_character(str(intent.params.get("query", "")), npc_only=True)
         if npc is None:
-            return Resolution(False, "NPC target is missing or ambiguous.")
+            return Resolution(False, "There's no one here by that name to speak with.")
         kind = {ActionType.PERSUADE: CheckKind.PERSUADE,
                 ActionType.DECEIVE: CheckKind.DECEIVE,
                 ActionType.INTIMIDATE: CheckKind.INTIMIDATE}[action]
         state, _trust = disposition_for(npc)
         outcome = resolve_check(kind, player, target=npc, rng=rng, disposition=state,
                                 approach_modifier=int(intent.params.get("approach_modifier", 0)))
+        check_payload: dict[str, Any] = {
+            "kind": kind.value, "roll": outcome.roll, "total": outcome.total,
+            "dc": outcome.dc, "success": outcome.success, "npc_id": npc["entity_id"],
+            "rolls": [record.__dict__ for record in outcome.rolls],
+        }
+        if intent.params.get("utterance"):
+            check_payload["utterance"] = str(intent.params["utterance"])
         event(EventType.CHECK_RESOLVED, player["entity_id"],
-              [player["entity_id"], npc["entity_id"]], current_id,
-              {"kind": kind.value, "roll": outcome.roll, "total": outcome.total,
-               "dc": outcome.dc, "success": outcome.success,
-               "rolls": [record.__dict__ for record in outcome.rolls]},
+              [player["entity_id"], npc["entity_id"]], current_id, check_payload,
               f"{kind.value.title()} {'succeeded' if outcome.success else 'failed'}.")
         deltas = {
             ActionType.PERSUADE: (10, -5), ActionType.DECEIVE: (10, -20),
@@ -528,7 +626,7 @@ def resolve_world_action(
                        and (item["entity_id"] == query
                             or item.get("name", "").casefold() == query.casefold())), None)
         if target is None or stolen is None:
-            return Resolution(False, "Steal target is missing or ambiguous.")
+            return Resolution(False, "You can't find that to steal.")
         state = disposition_for(target)[0] if target["entity_type"] == "NPC" else DispositionState.HOSTILE
         outcome = resolve_check(CheckKind.STEAL, player, target=target, rng=rng, disposition=state)
         event(EventType.CHECK_RESOLVED, player["entity_id"],
@@ -568,7 +666,7 @@ def resolve_world_action(
                       and (entity["entity_id"] == query
                            or entity.get("name", "").casefold() == query.casefold())]
         if len(candidates) != 1:
-            return Resolution(False, "Attack target is missing or ambiguous.")
+            return Resolution(False, "There's nothing here by that name to attack.")
         target = candidates[0]
         disposition_change: tuple[str, str, int, int] | None = None
         if target["entity_type"] == "NPC":
@@ -719,7 +817,9 @@ def resolve_world_action(
                   [player["entity_id"], target["entity_id"]], current_id,
                   {"treasure_id": target["entity_id"]}, "The boss treasure was claimed.")
         environment_response(current_id)
-    elif action == ActionType.INTERACT and str(intent.params.get("query", "")).replace(" ", "_") == "boss_door":
+    elif action == ActionType.INTERACT and "boss_door" in {
+        str(intent.params.get("query", "")).replace(" ", "_"), *intent.targets
+    }:
         topology = Topology(campaign["topology"])
         if campaign["boss_cell_id"] not in topology.neighbors(current_id):
             return Resolution(False, "The boss door is not reachable from here.")
@@ -737,8 +837,79 @@ def resolve_world_action(
                   current_id, {"boss_cell_id": campaign["boss_cell_id"]},
                   "The boss door unlocked.")
         environment_response(current_id)
+    elif action in {ActionType.INTERACT, ActionType.CREATIVE_INTERACTION}:
+        effects = list(intent.effects_on_success)
+        check_kind = intent.params.get("check_kind")
+        if check_kind:
+            kind = CheckKind(str(check_kind))
+            if kind not in {CheckKind.SKILL, CheckKind.SEARCH}:
+                kind = CheckKind.SKILL
+            outcome = resolve_check(
+                kind, player, rng=rng,
+                approach_modifier=int(intent.params.get("approach_modifier", 0)),
+                suggested_difficulty=int(intent.params.get("suggested_difficulty", 10)),
+            )
+            event(EventType.CHECK_RESOLVED, player["entity_id"], [player["entity_id"]],
+                  current_id,
+                  {"kind": kind.value, "roll": outcome.roll, "total": outcome.total,
+                   "dc": outcome.dc, "success": outcome.success,
+                   "rolls": [record.__dict__ for record in outcome.rolls]},
+                  f"{kind.value.title()} check {'succeeded' if outcome.success else 'failed'}.")
+            if not outcome.success:
+                effects = list(intent.effects_on_failure)
+        features = current_cell.setdefault("features", [])
+        first_refusal: str | None = None
+        for effect in effects:
+            effect_type = effect.get("type")
+            if effect_type == "SET_FEATURE_STATE":
+                feature, refusal = validate_feature_state_change(features, effect)
+                if feature is None:
+                    rejected_effects.append(dict(effect))
+                    first_refusal = first_refusal or refusal
+                    continue
+                key, value = str(effect["key"]), str(effect["value"])
+                before = feature.get("state", {}).get(key)
+                feature.setdefault("state", {})[key] = value  # type: ignore[union-attr]
+                current_cell_changed = True
+                event(EventType.FEATURE_STATE_CHANGED, player["entity_id"],
+                      [player["entity_id"], feature["feature_id"]], current_id,
+                      {"feature_id": feature["feature_id"], "key": key,
+                       "before": before, "after": value},
+                      f"The {feature['name']} is now {value}.",
+                      memory=MemoryStatus.PENDING)
+            elif effect_type == "CREATE_FEATURE":
+                refusal = validate_created_feature(features, effect)
+                if refusal is not None:
+                    rejected_effects.append(dict(effect))
+                    first_refusal = first_refusal or refusal
+                    continue
+                taken = {feature.get("feature_id") for feature in features}
+                index = len(features) + 1
+                while f"feat_{current_id}_{index}" in taken:
+                    index += 1
+                created = {
+                    "feature_id": f"feat_{current_id}_{index}",
+                    "kind": str(effect.get("kind", "mark")),
+                    "name": str(effect["name"]).strip(),
+                    "properties": list(effect.get("properties", ())),
+                    "state": {key: value for key, value in dict(effect.get("state") or {}).items()
+                              if value is not None},
+                    "created_by": "PLAYER_ACTION",
+                }
+                features.append(created)
+                current_cell_changed = True
+                event(EventType.FEATURE_CREATED, player["entity_id"],
+                      [player["entity_id"], created["feature_id"]], current_id,
+                      {"feature": created}, f"Created {created['name']}.",
+                      memory=MemoryStatus.PENDING)
+            elif effect_type != "NOOP":
+                rejected_effects.append(dict(effect))
+        if not current_cell_changed and not check_kind:
+            return Resolution(False, first_refusal or "Nothing you do there changes anything.",
+                              rejected_effects=rejected_effects)
+        environment_response(current_id)
     else:
-        return Resolution(False, f"Unsupported A4 action {action}")
+        return Resolution(False, "That isn't something you can do right now.")
 
     mutations: list[DocumentMutation] = []
     campaign_fields = {key: campaign[key] for key in ("boss_door", "status", "winner_player_id")
@@ -773,6 +944,12 @@ def resolve_world_action(
             set_fields={"visited_by": destination["visited_by"],
                         "last_updated_turn": destination["last_updated_turn"]},
         ))
+    if current_cell_changed:
+        touched_cells.add(current_cell["cell_id"])
+        mutations.append(DocumentMutation(
+            "cells", current_cell["cell_id"], int(view.current_cell["version"]),
+            set_fields={"features": current_cell["features"], "last_updated_turn": sequence},
+        ))
     inserts = [DocumentInsert("entities", item) for item in inserted_items]
     return Resolution(
         True,
@@ -782,6 +959,7 @@ def resolve_world_action(
         touched_entity_ids=sorted({mutation.document_id for mutation in mutations
                                    if mutation.collection == "entities"}),
         touched_cell_ids=sorted(touched_cells),
+        rejected_effects=rejected_effects,
         expected_turn=int(original_campaign["current_turn"]),
         expected_campaign_version=int(original_campaign["version"]),
         turn_id=turn_id,

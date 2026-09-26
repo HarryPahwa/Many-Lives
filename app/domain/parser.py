@@ -48,6 +48,11 @@ def parse_fast_path(text: str, actor_id: str) -> ActionIntent | None:
             params={"direction": DIRECTION_MAP[clean]},
         )
     
+    # Compound or descriptive requests need the adjudicator, not a literal target match.
+    padded = f" {clean} "
+    if any(marker in padded for marker in (" and ", " then ", " about ", ",", ";", "?")):
+        return None
+
     parts = clean.split(maxsplit=1)
     cmd = parts[0]
     arg = parts[1] if len(parts) > 1 else ""
@@ -74,10 +79,15 @@ def parse_fast_path(text: str, actor_id: str) -> ActionIntent | None:
         )
 
     if cmd in {"interact", "open"} and arg:
+        effects = []
+        if cmd == "open" and arg.replace(" ", "_") != "boss_door":
+            effects = [{"type": "SET_FEATURE_STATE", "feature_id": arg,
+                        "key": "open_state", "value": "open"}]
         return ActionIntent(
             action_type=ActionType.INTERACT,
             actor_id=actor_id,
             params={"query": arg},
+            effects_on_success=effects,
         )
 
     if cmd == "search":

@@ -238,6 +238,9 @@ class ActionIntent(BaseModel):
     actor_id: str
     targets: list[str] = Field(default_factory=list)
     params: dict[str, str | int] = Field(default_factory=dict)
+    # Adjudicator proposals only; the engine re-validates every entry (§13.4).
+    effects_on_success: list[dict[str, Any]] = Field(default_factory=list)
+    effects_on_failure: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Check(BaseModel):

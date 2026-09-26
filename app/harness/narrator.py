@@ -19,10 +19,18 @@ from app.harness.model_client import ModelClient
 
 
 _SYSTEM = """You narrate a grounded dark-fantasy dungeon in second-person present tense.
-Describe only supplied events and the current snapshot. Never invent an entity, exit,
+Describe only supplied events and the current snapshot. Narrate events in event_index
+order: the player's action first, then any responses to it. Never invent an entity, exit,
 outcome, number, or world fact. Every character, item, or feature mentioned in prose
 must have at least a present claim. Historical memories are background; current state
-wins. NPC speech may reveal only supplied allowed or newly revealed facts. Keep prose
+wins. When social is supplied, the NPC answers the player's recent_dialogue with at
+least one quoted line of speech, in character and shaped by disposition. NPC speech may
+reveal only supplied allowed_facts or revealed_fact; for anything else (a personal name,
+history, directions) the NPC deflects, evades, or answers vaguely instead of inventing
+it. Keep scene description to one sentence on a dialogue turn. When
+rejection_reason is set, the player's attempt changed nothing and rejection_reason is
+already shown to them verbatim: do not restate it, never describe the attempted change
+as happening, and write at most two short sentences of the unchanged scene. Keep prose
 to 120 words or fewer. Return JSON only."""
 
 

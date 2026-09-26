@@ -60,6 +60,11 @@ _APPLIED_STATUSES = frozenset(
     {"COMMITTED", "NARRATED", "NARRATION_FAILED", "REJECTED"}
 )
 
+_SOCIAL_ACTIONS = frozenset({"TALK", "PERSUADE", "DECEIVE", "INTIMIDATE"})
+
+# Test-only shortcut into the death/respawn path; honoured only with DEBUG_ENDPOINTS=true.
+_DEBUG_DIE_COMMANDS = frozenset({"/die", "debug die", "kill myself"})
+
 
 class CampaignNotFound(LookupError):
     """Unknown campaign -> HTTP 404 (§17.1)."""
@@ -139,7 +144,15 @@ class TurnOrchestrator:
         intent = engine.parse_fast_path(request.input, request.player_id)
         manifest: ContextManifest | None = None
 
-        if intent is not None:
+        from app.config import get_settings
+
+        if (
+            get_settings().debug_endpoints
+            and request.input.strip().lower() in _DEBUG_DIE_COMMANDS
+        ):
+            intent = Intent("WAIT", request.player_id, params={"debug_die": 1})
+            record.path = "DEBUG"
+        elif intent is not None:
             record.path = "FAST"
         else:
             record.path = "ADJUDICATED"
@@ -171,6 +184,12 @@ class TurnOrchestrator:
                 "proposed_effects_on_failure": proposal.proposed_effects_on_failure,
                 "utterance": proposal.utterance,
             }
+            if proposal.feasibility == "INFEASIBLE":
+                resolution = EngineResolution(
+                    accepted=False,
+                    reason="That isn't something you can do here.",
+                )
+                return self._finish_rejected(view, record, resolution, "INFEASIBLE", manifest)
             # The proposal is data, not authority: the engine re-validates
             # every precondition below (§5.1, §10.3).
             intent = Intent(
@@ -178,7 +197,12 @@ class TurnOrchestrator:
                 actor_id=proposal.actor_id,
                 targets=list(proposal.targets),
                 params=dict(proposal.params),
+                effects_on_success=list(proposal.proposed_effects_on_success),
+                effects_on_failure=list(proposal.proposed_effects_on_failure),
             )
+
+        if intent.action_type in _SOCIAL_ACTIONS:
+            intent.params.setdefault("utterance", request.input[:300])
 
         # 4. Resolve.
         resolution = engine.resolve(view, intent)
@@ -369,6 +393,12 @@ class TurnOrchestrator:
     ) -> TurnResult:
         """A rejected turn is narrated and recorded, but changes no state."""
         narration, source = self._narrate(view, resolution, "ACTION", record)
+        # The engine's reason is authoritative; the player must see it even if
+        # the narrator model ignores it.
+        if resolution.reason and not narration.startswith(resolution.reason):
+            narration = f"{resolution.reason} {narration}"
+            if record.narration is not None:
+                record.narration["prose"] = narration
         record.status = "REJECTED"
         record.reason_code = reason_code
         result = self._build_result(

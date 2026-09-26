@@ -88,6 +88,8 @@ class Intent:
     actor_id: str
     targets: list[str] = field(default_factory=list)
     params: dict[str, Any] = field(default_factory=dict)
+    effects_on_success: list[dict[str, Any]] = field(default_factory=list)
+    effects_on_failure: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

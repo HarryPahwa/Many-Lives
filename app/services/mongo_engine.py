@@ -92,6 +92,7 @@ class MongoEngine:
             actor_id=parsed.actor_id,
             targets=list(parsed.targets),
             params=dict(parsed.params),
+            effects_on_success=list(parsed.effects_on_success),
         )
 
     def resolve(self, view: WorldView, intent: Intent) -> EngineResolution:
@@ -103,6 +104,8 @@ class MongoEngine:
                 actor_id=intent.actor_id,
                 targets=intent.targets,
                 params=intent.params,
+                effects_on_success=intent.effects_on_success,
+                effects_on_failure=intent.effects_on_failure,
             )
             snapshot = self._snapshot_for_action(view.campaign_id, view.player_id, action)
         except (ValueError, StateNotFoundError) as exc:
@@ -131,6 +134,7 @@ class MongoEngine:
         return CommitResult(
             turn_sequence=(raw.expected_turn or 0) + 1,
             event_ids=[event.event_id for event in raw.events],
+            events=[event.model_dump(mode="json") for event in raw.events],
         )
 
     def generate_room(self, campaign_id: str, key: str) -> None:
@@ -333,14 +337,17 @@ class MongoEngine:
         from app.services.stubs import EngineResolution
 
         rolls = [
-            Roll(**roll) for event in raw.events for roll in event.payload.get("rolls", ())
-            if {"purpose", "sides", "value"}.issubset(roll)
+            Roll(purpose=roll["purpose"], sides=roll["sides"], value=roll["value"])
+            for event in raw.events for roll in event.payload.get("rolls", ())
+            if isinstance(roll.get("sides"), int) and isinstance(roll.get("value"), int)
+            and not isinstance(roll.get("value"), bool)
         ]
         return EngineResolution(
             accepted=raw.accepted, reason=raw.reason,
             effects=[{"type": event.type.value} for event in raw.events],
             event_types=[event.type.value for event in raw.events],
-            outcome_summary=raw.outcome_summary, rolls=rolls, pending=pending,
+            outcome_summary=raw.outcome_summary, rolls=rolls,
+            rejected_effects=list(raw.rejected_effects), pending=pending,
         )
 
     @staticmethod

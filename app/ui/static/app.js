@@ -447,6 +447,7 @@ function applyTurnResult(result) {
   if (result.narration_source === "TEMPLATE") {
     logLine("(narration fell back to template text)", "system");
   }
+  logTurnTrace(result);
   renderRoom(result.visible_cell);
   $("meta-turn").textContent = `turn ${result.turn_sequence}`;
   $("meta-status").textContent = result.campaign_status;
@@ -675,6 +676,73 @@ function renderInspector(debug) {
     vector.textContent = `vector search: ${debug.vector_search_ms}ms`;
     root.appendChild(vector);
   }
+}
+
+// A compact "what the harness did" block under each turn: routing, the
+// adjudicator's proposal, and the engine's verdict.
+async function logTurnTrace(result) {
+  const entry = document.createElement("div");
+  entry.className = "log-entry log-trace";
+  const row = (label, value) => {
+    const line = document.createElement("div");
+    const key = document.createElement("span");
+    key.className = "trace-key";
+    key.textContent = `${label}:`;
+    line.append(key, ` ${value}`);
+    entry.appendChild(line);
+  };
+
+  let debug = null;
+  if (state.debugAvailable) {
+    try {
+      debug = await api(
+        "GET",
+        `/api/campaigns/${state.campaignId}/debug/context?turn_id=${encodeURIComponent(result.turn_id)}`
+      );
+    } catch {
+      debug = null;
+    }
+  }
+
+  if (debug) {
+    const route = debug.path === "FAST" ? "FAST (parser, no model)" : debug.path;
+    row("route", debug.action_class ? `${route} · class ${debug.action_class}` : route);
+    const p = debug.proposal;
+    if (p) {
+      const targets = (p.targets || []).join(", ") || "none";
+      row("proposal", `${p.action_type} → ${targets} · ${p.feasibility}`);
+      const effects = (p.proposed_effects_on_success || [])
+        .map((e) => [e.type, e.feature_id || e.entity_id || e.item_id, e.key && `${e.key}=${e.value}`]
+          .filter(Boolean).join(" "))
+        .join("; ");
+      if (effects) row("proposed", effects);
+      if (p.reason) row("model reason", p.reason);
+    }
+  }
+
+  const verdict = result.accepted ? "ACCEPTED" : `REJECTED — ${result.reason || "no reason"}`;
+  row("engine", debug && debug.reason_code && !result.accepted
+    ? `${verdict} [${debug.reason_code}]` : verdict);
+  const events = (result.outcome && result.outcome.events) || [];
+  row("events", events.length ? events.join(", ") : "none (no state change)");
+  if (result.accepted && result.outcome && result.outcome.summary) {
+    row("last event", result.outcome.summary);
+  }
+  const rolls = (result.outcome && result.outcome.rolls) || [];
+  if (rolls.length) {
+    row("rolls", rolls.map((r) => `${r.purpose} d${r.sides}=${r.value}`).join(", "));
+  }
+  if (debug && debug.rejected_effects && debug.rejected_effects.length) {
+    row("dropped effects", debug.rejected_effects.map((e) => e.type).join(", "));
+  }
+  if (debug && debug.model_calls && debug.model_calls.length) {
+    row("model calls", debug.model_calls
+      .map((c) => `${c.role.toLowerCase()} ${c.latency_ms}ms`).join(", "));
+  }
+
+  const log = $("narrative");
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
 }
 
 async function refreshInspector(turnId) {
@@ -1020,8 +1088,30 @@ async function reconnect() {
   await resumeCampaign(remembered, false);
 }
 
+const TRACE_KEY = "many-lives:trace";
+
+function applyTracePreference(visible) {
+  document.body.classList.toggle("hide-trace", !visible);
+  $("trace-toggle").checked = visible;
+  try {
+    window.localStorage.setItem(TRACE_KEY, visible ? "on" : "off");
+  } catch {
+    // A blocked store only means the choice is not remembered.
+  }
+}
+
 function init() {
   loadSpeechPreference();
+  let traceVisible = true;
+  try {
+    traceVisible = window.localStorage.getItem(TRACE_KEY) !== "off";
+  } catch {
+    traceVisible = true;
+  }
+  applyTracePreference(traceVisible);
+  $("trace-toggle").addEventListener("change", (event) => {
+    applyTracePreference(event.target.checked);
+  });
   $("speech-toggle").addEventListener("change", (event) => {
     speech.enabled = event.target.checked;
     speechPreference(speech.enabled);

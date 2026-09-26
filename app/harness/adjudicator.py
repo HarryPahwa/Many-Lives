@@ -26,7 +26,9 @@ unknown references are INFEASIBLE. Damage, success, XP, and numbers are decided 
 For checks, approach_modifier judges method quality from -2 to 2 and defaults to 0.
 Allowed effects only: TRANSFER_ITEM (visible item), CONSUME_ITEM (safe item),
 SET_FEATURE_STATE (closed state), CREATE_FEATURE (cosmetic current-cell object),
-SET_DISPOSITION (direction only), ADJUST_STAT (creative hp harm only), NOOP.
+SET_DISPOSITION (direction only), ADJUST_STAT (creative hp harm only, stat "hp",
+delta an integer from -3 to 0), NOOP. Ordinary weapon attacks use action_type ATTACK
+with no ADJUST_STAT; code rolls their damage.
 Return JSON only."""
 
 
