@@ -925,8 +925,30 @@ async function reconnect() {
   await resumeCampaign(remembered, false);
 }
 
+const TRACE_KEY = "many-lives:trace";
+
+function applyTracePreference(visible) {
+  document.body.classList.toggle("hide-trace", !visible);
+  $("trace-toggle").checked = visible;
+  try {
+    window.localStorage.setItem(TRACE_KEY, visible ? "on" : "off");
+  } catch {
+    // A blocked store only means the choice is not remembered.
+  }
+}
+
 function init() {
   loadSpeechPreference();
+  let traceVisible = true;
+  try {
+    traceVisible = window.localStorage.getItem(TRACE_KEY) !== "off";
+  } catch {
+    traceVisible = true;
+  }
+  applyTracePreference(traceVisible);
+  $("trace-toggle").addEventListener("change", (event) => {
+    applyTracePreference(event.target.checked);
+  });
   $("speech-toggle").addEventListener("change", (event) => {
     speech.enabled = event.target.checked;
     speechPreference(speech.enabled);

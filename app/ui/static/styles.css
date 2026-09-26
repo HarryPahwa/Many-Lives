@@ -197,6 +197,10 @@ section {
   white-space: pre-wrap;
 }
 
+body.hide-trace .log-trace {
+  display: none;
+}
+
 .log-trace .trace-key {
   color: var(--accent);
 }
