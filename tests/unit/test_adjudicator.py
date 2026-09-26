@@ -51,4 +51,3 @@ def test_adjudicator_drops_engine_only_effects():
     )
     assert result.proposal.proposed_effects_on_success == []
     assert result.rejected_effects[0]["type"] == "SET_STAT"
-
