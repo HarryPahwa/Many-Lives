@@ -11,6 +11,8 @@ from pymongo import ReturnDocument
 from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
 
+from app.domain.errors import ConcurrencyConflict
+from app.domain.invariants import InvariantReport, check_invariants, static_environment_digest
 from app.domain.rules import Resolution
 from app.domain.types import EngineTurnResult
 from app.persistence.views import WorldView, freeze
@@ -27,10 +29,6 @@ class PersistenceError(RuntimeError):
 
 class StateNotFoundError(PersistenceError):
     """Raised when required campaign state does not exist."""
-
-
-class ConcurrencyConflict(PersistenceError):
-    """Raised when canonical state changed after resolution."""
 
 
 @dataclass(frozen=True)
@@ -249,6 +247,20 @@ class Repository:
             {"campaign_id": campaign_id, "turn_id": turn_id}
         )
 
+    def check_campaign_invariants(self, campaign_id: str) -> InvariantReport:
+        """Run the full campaign-scoped invariant sweep."""
+        campaign = self.get_campaign(campaign_id)
+        if campaign is None:
+            raise StateNotFoundError(f"Campaign not found: {campaign_id}")
+        return check_invariants(
+            campaign,
+            list(self._db.cells.find({"campaign_id": campaign_id})),
+            list(self._db.entities.find({"campaign_id": campaign_id})),
+            list(self._db.events.find({"campaign_id": campaign_id})),
+            list(self._db.turns.find({"campaign_id": campaign_id})),
+            expected_key_count=int(campaign.get("config", {}).get("key_reservations", 6)),
+        )
+
     def reject_turn(
         self, campaign_id: str, turn_id: str, result: EngineTurnResult
     ) -> EngineTurnResult:
@@ -377,6 +389,9 @@ class Repository:
                         "generated": True,
                         "generation_source": generation_source,
                         "generation_started_at": None,
+                        "static_environment_digest": static_environment_digest(
+                            room["static_environment"]
+                        ),
                     },
                     "$inc": {"version": 1},
                 },
@@ -681,6 +696,13 @@ class Repository:
             if replay and replay.get("result"):
                 return EngineTurnResult.model_validate(replay["result"])
             raise
+        # Post-commit by design: invariant failures describe committed state
+        # and never roll it back (TDD §9.10).
+        report = self.check_campaign_invariants(campaign_id)
+        self._db.turns.update_one(
+            {"campaign_id": campaign_id, "turn_id": turn_id},
+            {"$set": {"invariants": report.to_document()}},
+        )
         return turn_result
 
 

@@ -1,0 +1,35 @@
+import mongomock
+
+from app.domain.rules import resolve_world_action
+from app.domain.types import ActionIntent, ActionType
+from app.persistence.indexes import create_btree_indexes
+from app.persistence.repositories import Repository
+from app.services.campaign_service import create_campaign
+
+
+CAMPAIGN_ID = "cmp_a5sweep00001"
+
+
+class ImmediateTransactions:
+    def __call__(self, callback):
+        return callback(None)
+
+
+def test_fifty_committed_turns_have_zero_invariant_failures():
+    db = mongomock.MongoClient().dungeon
+    create_btree_indexes(db)
+    repository = Repository(db, transaction_runner=ImmediateTransactions())
+    created = create_campaign(repository, "Ada", seed=505, campaign_id=CAMPAIGN_ID)
+    for index in range(50):
+        turn_id = f"sweep-{index}"
+        repository.begin_turn(CAMPAIGN_ID, turn_id, created.player_id, "look")
+        resolution = resolve_world_action(
+            ActionIntent(action_type=ActionType.LOOK, actor_id=created.player_id),
+            repository.load_world_view(CAMPAIGN_ID, created.player_id),
+            turn_id=turn_id,
+        )
+        repository.commit_turn(CAMPAIGN_ID, created.player_id, resolution)
+        record = repository.get_turn(CAMPAIGN_ID, turn_id)
+        assert record["invariants"] == {"checked": 15, "failures": []}
+    assert repository.check_campaign_invariants(CAMPAIGN_ID).passed
+    assert db.campaigns.find_one({"_id": CAMPAIGN_ID})["current_turn"] == 50

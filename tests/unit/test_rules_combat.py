@@ -15,7 +15,7 @@ def snapshot(*, enemy_hp=1):
               "character": {"level": 1, "xp": 0, "pending_level_ups": 0,
                             "hp": 20, "max_hp": 20, "mp": 6, "max_mp": 6,
                             "attack": 5, "defense": 2, "speed": 4, "dodge_pct": 0,
-                            "status": "ALIVE"},
+                            "skill": 3, "status": "ALIVE"},
               "player": {"spawn_cell_id": "cell_0_0", "discovered_cell_ids": ["cell_0_0"],
                          "new_cells_since_death": 0, "damage_dealt_since_death": 0,
                          "deaths": 0, "kills": 0}}
@@ -53,3 +53,42 @@ def test_locked_boss_destination_rejects_move():
     result = resolve_world_action(intent, view, turn_id="turn-2")
     assert not result.accepted
     assert "boss door" in result.reason
+
+
+def test_talk_reveals_allowed_fact_and_rumors_cell():
+    view = snapshot()
+    npc = view.characters[1]
+    npc["entity_type"] = "NPC"
+    npc["name"] = "keeper"
+    npc["character"]["disposition"] = {
+        "player": {"state": "NEUTRAL", "trust": 20, "reason_event_ids": []}
+    }
+    npc["character"]["knowledge"] = [{"fact_id": "fact_1", "type": "CELL_HINT",
+                                         "subject_cell_id": "cell_1_0", "hint": "Eastward.",
+                                         "revealed_to": []}]
+    view.player["player"]["rumored_cell_ids"] = []
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.TALK, actor_id="player",
+                     params={"query": "keeper"}), view, turn_id="talk-1")
+    assert result.accepted
+    assert [event.type.value for event in result.events[:3]] == [
+        "DIALOGUE", "FACT_REVEALED", "CELL_RUMORED"
+    ]
+    player_mutation = next(value for value in result.mutations if value.document_id == "player")
+    assert "cell_1_0" in player_mutation.set_fields["player"]["rumored_cell_ids"]
+
+
+def test_persuasion_records_check_and_updates_disposition():
+    view = snapshot()
+    npc = view.characters[1]
+    npc["entity_type"] = "NPC"
+    npc["name"] = "keeper"
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.PERSUADE, actor_id="player",
+                     params={"query": "keeper", "approach_modifier": 2}),
+        view, turn_id="social-1")
+    assert result.accepted
+    assert result.events[0].type.value == "CHECK_RESOLVED"
+    npc_mutation = next(value for value in result.mutations if value.document_id == "enemy")
+    disposition = npc_mutation.set_fields["character"]["disposition"]["player"]
+    assert -100 <= disposition["trust"] <= 100
