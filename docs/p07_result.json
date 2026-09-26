@@ -3,10 +3,10 @@
   "campaign_id": "cmp_stub00000001",
   "seed": 7,
   "engine": "StubEngine",
-  "harness": "StubHarness",
+  "harness": "ProductionHarness",
   "context_builder": "app.harness.context_builder (real)",
   "harness_reads_history": true,
-  "embeddings": "deterministic stand-in, 8 dims (no provider configured)",
+  "embeddings": "provider perplexity/pplx-embed-v1-0.6b, 1024 dims",
   "budget_tokens": 3000,
   "checkpoints": [
     {
@@ -20,59 +20,59 @@
       "entity_ids": 2,
       "event_ids": 0,
       "manifest_memories": 0,
-      "build_ms_median": 0.025
+      "build_ms_median": 0.054
     },
     {
       "events": 100,
       "memories": 10,
       "turns": 0,
-      "stored_bytes": 38366,
+      "stored_bytes": 144703,
       "estimated_tokens": 239,
       "measured_text_tokens": 239,
       "components": 9,
       "entity_ids": 2,
       "event_ids": 5,
       "manifest_memories": 0,
-      "build_ms_median": 0.05
+      "build_ms_median": 0.074
     },
     {
       "events": 1000,
       "memories": 100,
       "turns": 0,
-      "stored_bytes": 389023,
+      "stored_bytes": 1452418,
       "estimated_tokens": 243,
       "measured_text_tokens": 243,
       "components": 9,
       "entity_ids": 2,
       "event_ids": 5,
       "manifest_memories": 0,
-      "build_ms_median": 0.133
+      "build_ms_median": 0.662
     },
     {
       "events": 5000,
       "memories": 500,
       "turns": 0,
-      "stored_bytes": 1966670,
+      "stored_bytes": 7283272,
       "estimated_tokens": 246,
       "measured_text_tokens": 246,
       "components": 9,
       "entity_ids": 2,
       "event_ids": 5,
       "manifest_memories": 0,
-      "build_ms_median": 0.668
+      "build_ms_median": 19.195
     },
     {
       "events": 10000,
       "memories": 1000,
       "turns": 0,
-      "stored_bytes": 3942706,
+      "stored_bytes": 14575071,
       "estimated_tokens": 246,
       "measured_text_tokens": 246,
       "components": 9,
       "entity_ids": 2,
       "event_ids": 5,
       "manifest_memories": 0,
-      "build_ms_median": 1.651
+      "build_ms_median": 7.275
     }
   ],
   "baseline_events": 100,
@@ -81,7 +81,7 @@
   "token_growth_factor": 1.0293,
   "baseline_note": "Growth is measured from the first non-empty checkpoint. The rise from an empty history is the recent-event window filling once, not growth with history.",
   "peak_estimated_tokens": 246,
-  "seed_seconds": 0.03,
+  "seed_seconds": 95.16,
   "passed": true,
   "caveat": "Stored history grows while per-call context stays within budget. Not evidence of a billion-token live campaign (TDD \u00a716.4, \u00a73.2)."
 }

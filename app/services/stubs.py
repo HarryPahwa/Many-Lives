@@ -845,6 +845,55 @@ class StubEngine:
             return None
         return camp.turns[camp.turn_order[-1]]
 
+    # ---- room visuals (optional capability) ----
+
+    def visual_scene(self, campaign_id: str, cell_id: str) -> dict[str, Any] | None:
+        """Read-only projection of a discovered cell, for Room Visuals.
+
+        Deliberately **not** on ``EnginePort``: the turn loop never needs it, so
+        Developer A's engine is not obliged to implement it (the visual service
+        falls back to ``load_world_view``). Returns ``None`` when the campaign,
+        the cell, or the player's knowledge of it does not justify a picture —
+        images must never reveal a room the player has not discovered.
+
+        Mutates nothing, and never triggers room generation.
+        """
+        camp = self._campaigns.get(campaign_id)
+        if camp is None:
+            return None
+        cell = camp.cells.get(cell_id)
+        if cell is None or not cell.generated:
+            return None
+        if cell_id not in camp.discovered:
+            return None
+        return {
+            "cell_id": cell_id,
+            "name": cell.name,
+            "description": cell.description,
+            "features": [
+                {
+                    "id": f.id,
+                    "name": f.name,
+                    "state": dict(f.state or {}),
+                }
+                for f in cell.features
+            ],
+            "characters": [
+                {
+                    "id": c.id,
+                    "name": c.name,
+                    "status": c.status,
+                    "hp": c.hp,
+                    "max_hp": c.max_hp,
+                    "description": getattr(c, "description", "") or "",
+                }
+                for c in cell.characters
+            ],
+            "items": [
+                {"id": i.id, "name": i.name, "where": i.where} for i in cell.items
+            ],
+        }
+
     # ---- history store (§9.5, §9.6) — optional capability ----
 
     def append_events(self, campaign_id: str, events: list[dict[str, Any]]) -> int:

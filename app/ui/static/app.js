@@ -20,6 +20,16 @@ const state = {
   // Mirrors TurnResult.debug_available: false when DEBUG_ENDPOINTS is off.
   debugAvailable: false,
   lastTurnId: null,
+  // Room visuals (optional feature). visualToken guards against a poll for
+  // one room resolving after the player has walked into another.
+  visualCell: null,
+  visualToken: 0,
+  visualPolls: 0,
+  visualAutoRequested: null,
+  // Set from the server. While false the client never touches a visual route:
+  // a 404 is logged by the browser as a console error, which would be a
+  // behaviour change for a feature that is meant to be inert when off.
+  visualsEnabled: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -397,6 +407,8 @@ async function resumeCampaign(campaignId, fromGesture = true) {
     state.campaignId = id;
     state.playerId = resumed.campaign.player_id;
     state.debugAvailable = Boolean(resumed.debug_available);
+    state.visualsEnabled = Boolean(resumed.visuals_enabled);
+    if (!state.visualsEnabled) hideVisualPanel();
     state.lastTurnId = null; // the resume record is the latest turn
     $("inspector-panel").hidden = !state.debugAvailable;
     rememberCampaign(id);
@@ -408,6 +420,11 @@ async function resumeCampaign(campaignId, fromGesture = true) {
     renderMeta(resumed.campaign);
     window.dispatchEvent(new CustomEvent("campaign-refreshed"));
     refreshInspector(null);
+    try {
+      refreshVisual(resumed.visible_cell.cell_id);
+    } catch (error) {
+      // As above: visuals are decoration, never a blocker.
+    }
   } catch (error) {
     toast(`Could not resume: ${error.message}`);
   } finally {
@@ -421,6 +438,8 @@ async function resumeCampaign(campaignId, fromGesture = true) {
 
 function applyTurnResult(result) {
   state.debugAvailable = Boolean(result.debug_available);
+  state.visualsEnabled = Boolean(result.visuals_enabled);
+  if (!state.visualsEnabled) hideVisualPanel();
   state.lastTurnId = result.turn_id;
   $("inspector-panel").hidden = !state.debugAvailable;
   logLine(result.narration, result.accepted ? "narration" : "rejected");
@@ -433,6 +452,11 @@ function applyTurnResult(result) {
   $("meta-status").textContent = result.campaign_status;
   window.dispatchEvent(new CustomEvent("campaign-refreshed"));
   refreshInspector(result.turn_id);
+  try {
+    refreshVisual(result.visible_cell.cell_id);
+  } catch (error) {
+    // A visual problem must never disturb the turn that just rendered.
+  }
 }
 
 async function submitTurn(text) {
@@ -672,6 +696,145 @@ async function refreshInspector(turnId) {
 }
 
 // ---------------------------------------------------------------------------
+// Room visuals (optional; docs/Room_Visuals_TDD.md §12)
+//
+// The panel is hidden unless the server reports on the feature, so with
+// ENABLE_ROOM_VISUALS=false the page looks and behaves exactly as before.
+// Every string here is written with textContent: a caption is derived from
+// model-authored room names.
+// ---------------------------------------------------------------------------
+
+const VISUAL_POLL_MS = 2000;
+const VISUAL_POLL_LIMIT = 60;
+
+function hideVisualPanel() {
+  const panel = $("visual-panel");
+  if (panel) panel.hidden = true;
+}
+
+function renderVisual(status) {
+  const panel = $("visual-panel");
+  if (!panel) return;
+  if (!status) {
+    hideVisualPanel();
+    return;
+  }
+
+  panel.hidden = false;
+
+  const img = $("visual-img");
+  const caption = $("visual-caption");
+  const badge = $("visual-badge");
+  const button = $("visual-btn");
+
+  if (status.image_url) {
+    // Same-origin, server-generated URL only.
+    if (img.getAttribute("src") !== status.image_url) {
+      img.setAttribute("src", status.image_url);
+    }
+    img.hidden = false;
+  } else {
+    img.removeAttribute("src");
+    img.hidden = true;
+  }
+  img.alt = status.cell_id ? `Illustration of ${status.cell_id}` : "";
+
+  let badgeText = "";
+  if (status.status === "GENERATING") badgeText = "Generating…";
+  else if (status.status === "FAILED") badgeText = "Failed — retry";
+  else if (status.dirty) badgeText = "Out of date";
+  badge.textContent = badgeText;
+
+  caption.textContent =
+    status.revision > 0 ? `revision ${status.revision}` : "";
+
+  const needsWork =
+    status.status === "NONE" || status.status === "FAILED" || status.dirty;
+  button.hidden = !needsWork;
+  button.disabled = status.status === "GENERATING";
+  button.textContent = status.status === "NONE" ? "Generate visual" : "Update visual";
+}
+
+function shouldAutoRender(status) {
+  // A room with no picture yet, or one whose picture no longer matches the
+  // world. FAILED is deliberately excluded: a provider that keeps failing
+  // would otherwise be retried on every turn, and every attempt costs money.
+  // The button stays available for a manual retry.
+  if (status.status === "NONE") return true;
+  return status.status === "READY" && status.dirty === true;
+}
+
+function scheduleVisualPoll(cellId, token) {
+  if (token !== state.visualToken) return;
+  if (state.visualPolls >= VISUAL_POLL_LIMIT) return;
+  state.visualPolls += 1;
+  window.setTimeout(() => {
+    if (token === state.visualToken) refreshVisual(cellId, token);
+  }, VISUAL_POLL_MS);
+}
+
+async function refreshVisual(cellId, token) {
+  if (!state.visualsEnabled) return;
+  if (!state.campaignId || !cellId) return;
+  if (token === undefined) {
+    // A new cell: invalidate any poll still in flight for the previous one.
+    state.visualToken += 1;
+    state.visualPolls = 0;
+    token = state.visualToken;
+    state.visualCell = cellId;
+  }
+  if (token !== state.visualToken) return;
+
+  try {
+    const status = await api(
+      "GET",
+      `/api/campaigns/${state.campaignId}/cells/${encodeURIComponent(cellId)}/visual`
+    );
+    if (token !== state.visualToken) return;
+    renderVisual(status);
+
+    if (status.status === "GENERATING") {
+      scheduleVisualPoll(cellId, token);
+    } else if (status.auto_update && shouldAutoRender(status)) {
+      // Keyed on the exact situation, so each new room and each change
+      // triggers exactly one render rather than one per poll.
+      const key = `${cellId}:${status.status}:${status.revision}`;
+      if (state.visualAutoRequested !== key) {
+        state.visualAutoRequested = key;
+        requestVisual(cellId);
+      }
+    }
+  } catch (error) {
+    // 404 means the feature is off or the cell is not visible. Either way the
+    // panel simply does not exist for this page.
+    hideVisualPanel();
+  }
+}
+
+async function requestVisual(cellId) {
+  const cell = cellId || state.visualCell;
+  if (!state.campaignId || !cell) return;
+  const token = state.visualToken;
+  const button = $("visual-btn");
+  if (button) button.disabled = true;
+  try {
+    const status = await api(
+      "POST",
+      `/api/campaigns/${state.campaignId}/cells/${encodeURIComponent(cell)}/visual`
+    );
+    if (token !== state.visualToken) return;
+    renderVisual(status);
+    if (status.status !== "READY") {
+      state.visualPolls = 0;
+      scheduleVisualPoll(cell, token);
+    }
+  } catch (error) {
+    toast(`Could not request a visual: ${error.message}`);
+    if (button) button.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Restart / reconnect (§18, §29.2)
 //
 // The demo kills the server from the terminal. The page survives that, so on
@@ -887,6 +1050,10 @@ function init() {
   });
 
   window.addEventListener("campaign-refreshed", refreshPanels);
+  const visualButton = $("visual-btn");
+  if (visualButton) {
+    visualButton.addEventListener("click", () => requestVisual());
+  }
   $("inspector-details").addEventListener("toggle", () => {
     if ($("inspector-details").open) refreshInspector(state.lastTurnId);
   });

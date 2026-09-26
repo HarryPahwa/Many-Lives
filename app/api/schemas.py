@@ -161,6 +161,11 @@ class TurnResult(_Wire):
     visible_cell: VisibleCell
     campaign_status: str
     debug_available: bool = False
+    #: Room visuals are optional. The client must not probe the visual routes
+    #: when this is false: the request would 404, and the browser logs that as
+    #: a console error even when the JS handles it — a visible behaviour change
+    #: for a feature that is supposed to be inert when off (VIS-03).
+    visuals_enabled: bool = False
 
 
 class ResumeResult(_Wire):
@@ -176,6 +181,7 @@ class ResumeResult(_Wire):
     # Carried here as well as on TurnResult: the demo opens the inspector
     # right after resuming (§29.2), before any turn has been taken.
     debug_available: bool = False
+    visuals_enabled: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -315,3 +321,25 @@ class DebugContext(_Wire):
 
 CreateCampaignResponse.model_rebuild()
 ResumeResult.model_rebuild()
+
+
+# --------------------------------------------------------------------------
+# Room visuals (optional feature; docs/Room_Visuals_TDD.md §10.1)
+# --------------------------------------------------------------------------
+
+
+class RoomVisualStatus(_Wire):
+    """State of one room's illustration.
+
+    `image_url` is present whenever an asset exists — including while
+    GENERATING or after a FAILED attempt — so the UI keeps showing the previous
+    picture instead of flashing to empty.
+    """
+
+    cell_id: str
+    status: Literal["NONE", "GENERATING", "READY", "FAILED"]
+    dirty: bool = False
+    revision: int = 0
+    image_url: str | None = None
+    auto_update: bool = False
+    error_code: str | None = None

@@ -33,3 +33,19 @@ def test_minimap_and_panels_render_correctly():
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "all assertions passed" in result.stdout
+
+
+VISUAL_CHECK = Path(__file__).with_name("ui_visual_check.js")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_room_visual_panel_renders_correctly():
+    """Room Visuals §14.3 — the panel's own DOM check.
+
+    Separate from ui_render_check.js so that existing gate stays byte-identical.
+    """
+    result = subprocess.run(
+        ["node", str(VISUAL_CHECK)], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "all assertions passed" in result.stdout
