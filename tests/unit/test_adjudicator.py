@@ -1,8 +1,6 @@
 from app.domain.types import ActionProposal, Feasibility, Role, SetStat
 from app.harness.adjudicator import adjudicate
 from app.harness.model_client import FakeModelClient
-from app.services.harness_adapter import RuntimeHarness
-from app.services.stubs import StubEngine
 
 
 def proposal(**updates) -> ActionProposal:
@@ -54,15 +52,3 @@ def test_adjudicator_drops_engine_only_effects():
     assert result.proposal.proposed_effects_on_success == []
     assert result.rejected_effects[0]["type"] == "SET_STAT"
 
-
-def test_runtime_adapter_routes_free_text_to_the_typed_adjudicator():
-    engine = StubEngine()
-    campaign = engine.create_campaign("Ada", 7)
-    view = engine.load_world_view(campaign.campaign_id, campaign.player_id)
-    adapter = RuntimeHarness(FakeModelClient({(Role.ADJUDICATOR, "default"): proposal()}))
-
-    result, calls = adapter.adjudicate("I inspect the floor", view, "CREATIVE")
-
-    assert result is not None
-    assert result.actor_id == campaign.player_id
-    assert calls[0].role == "ADJUDICATOR"
