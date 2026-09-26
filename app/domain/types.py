@@ -395,6 +395,57 @@ class NarrationResult(BaseModel):
     claims: list[Claim]
 
 
+class SnapshotEntity(BaseModel):
+    """Read-only entity projection used by narration and verification."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str
+    name: str
+    kind: str
+    status: str | None = None
+    disposition: str | None = None
+    location: str | None = None
+    state: dict[str, str] = Field(default_factory=dict)
+
+
+class CellSnapshot(BaseModel):
+    """Post-resolution cell state. It is descriptive, never authoritative."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cell_id: str
+    name: str
+    description: str = ""
+    features: list[SnapshotEntity] = Field(default_factory=list)
+    characters: list[SnapshotEntity] = Field(default_factory=list)
+    items: list[SnapshotEntity] = Field(default_factory=list)
+
+
+class PlayerSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    player_id: str
+    hp: int
+    max_hp: int
+    mp: int
+    max_mp: int
+    level: int
+    equipment: list[str] = Field(default_factory=list)
+
+
+class SocialContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    npc_id: str
+    persona: str | None = None
+    disposition: str | None = None
+    allowed_facts: list[str] = Field(default_factory=list)
+    revealed_fact: str | None = None
+    recent_dialogue: list[str] = Field(default_factory=list)
+    relationship_memories: list[str] = Field(default_factory=list)
+
+
 class StaticEnvironment(BaseModel):
     model_config = ConfigDict(extra="forbid")
     materials: list[str] = Field(min_length=1, max_length=3)
