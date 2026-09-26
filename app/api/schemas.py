@@ -5,9 +5,8 @@ domain types in ``app.domain.types``: those describe engine internals, these
 describe JSON on the wire. All models use ``extra="forbid"`` (TDD §8.2) so an
 unexpected field is a 422 rather than a silently ignored key.
 
-NOTE for Developer A: ``app.domain.types`` also defines a ``TurnResult`` with a
-different shape (current_cell_id / events / outcome_summary). This module's
-``TurnResult`` is the §17.2 wire shape; the orchestrator maps engine -> wire.
+The engine's persistence result is ``EngineTurnResult``; this module's
+``TurnResult`` is the §17.2 wire shape. The orchestrator maps engine -> wire.
 Owned by C, reviewed by A and B.
 """
 

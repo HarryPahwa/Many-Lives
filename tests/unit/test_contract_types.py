@@ -176,7 +176,7 @@ MODEL_SAMPLES: dict[type[BaseModel], dict[str, Any]] = {
         "memory_attempts": 0,
         "schema_version": 1,
     },
-    t.TurnResult: {
+    t.EngineTurnResult: {
         "turn_id": "turn-1",
         "turn_sequence": 1,
         "accepted": True,
