@@ -43,4 +43,3 @@ def test_narrator_uses_model_contract_and_returns_call_record():
 def test_fallback_claims_every_visible_entity_present():
     result = fallback_narration([], snapshot())
     assert {claim.entity_id for claim in result.claims} == {"feat_1", "npc_1", "item_1"}
-
