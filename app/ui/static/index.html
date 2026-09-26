@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agentic Dungeon Harness</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <!-- UI shell (TDD §18). Regions wired later:
+         header (campaign selector), left (narrative log + input),
+         right (minimap, character/inventory, context inspector). -->
+    <header id="app-header">Agentic Dungeon Harness</header>
+    <main id="app-main">
+      <section id="narrative"></section>
+      <aside id="sidebar">
+        <div id="minimap"></div>
+        <div id="character"></div>
+        <div id="inspector" hidden></div>
+      </aside>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
