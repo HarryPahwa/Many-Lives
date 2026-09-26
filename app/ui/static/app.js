@@ -363,6 +363,7 @@ async function createCampaign() {
     });
     state.campaignId = created.campaign.campaign_id;
     state.playerId = created.campaign.player_id;
+    rememberCampaign(state.campaignId);
     clearLog();
     logLine(`Campaign ${created.campaign.campaign_id} created.`, "system");
     applyTurnResult(created.initial);
@@ -388,6 +389,7 @@ async function resumeCampaign(campaignId) {
     });
     state.campaignId = id;
     state.playerId = resumed.campaign.player_id;
+    rememberCampaign(id);
     clearLog();
     logLine(`Resumed ${id} from stored state — no transcript was replayed.`, "system");
     logLine(resumed.narration, "narration");
@@ -455,6 +457,50 @@ async function submitTurn(text) {
 // Wiring
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Restart / reconnect (§18, §29.2)
+//
+// The demo kills the server from the terminal. The page survives that, so on
+// load it reconnects by resuming the campaign it was last on. The id is the
+// only thing kept locally — never any game state, which would defeat the
+// point: continuity has to come from the store.
+// ---------------------------------------------------------------------------
+
+const LAST_CAMPAIGN_KEY = "many-lives:last-campaign";
+
+function rememberCampaign(campaignId) {
+  try {
+    window.localStorage.setItem(LAST_CAMPAIGN_KEY, campaignId);
+  } catch {
+    // Private mode or blocked storage: reconnecting is a convenience, and
+    // losing it must never break play.
+  }
+}
+
+function lastCampaign() {
+  try {
+    return window.localStorage.getItem(LAST_CAMPAIGN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+async function reconnect() {
+  const campaigns = await refreshCampaigns();
+  const remembered = lastCampaign();
+  if (!remembered) return;
+  if (!campaigns.some((c) => c.campaign_id === remembered)) {
+    // The server no longer knows it — a stub restart, or another database.
+    logLine(
+      `Campaign ${remembered} is no longer on the server. Pick another or create one.`,
+      "system"
+    );
+    return;
+  }
+  logLine("Reconnecting to the last campaign…", "system");
+  await resumeCampaign(remembered);
+}
+
 function init() {
   $("create-btn").addEventListener("click", createCampaign);
   $("resume-btn").addEventListener("click", () => resumeCampaign());
@@ -472,11 +518,17 @@ function init() {
 
   window.addEventListener("campaign-refreshed", refreshPanels);
 
-  refreshCampaigns().catch(() => toast("Could not reach the server."));
   logLine(
-    "Create a campaign or resume an existing one. State lives in the database, not in this page.",
+    "Create a campaign or resume an existing one. State lives in the store, not in this page.",
     "system"
   );
+  reconnect().catch((error) => {
+    toast(`Could not reach the server: ${error.message}`);
+    logLine(
+      "Server unreachable. Start it again, then reload this page to reconnect.",
+      "system"
+    );
+  });
 }
 
 document.addEventListener("DOMContentLoaded", init);
