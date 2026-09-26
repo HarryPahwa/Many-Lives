@@ -7,18 +7,70 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <!-- UI shell (TDD §18). Regions wired later:
-         header (campaign selector), left (narrative log + input),
-         right (minimap, character/inventory, context inspector). -->
-    <header id="app-header">Agentic Dungeon Harness</header>
+    <!-- UI shell (TDD §18). All model and player text is inserted with
+         textContent, never innerHTML: narration is untrusted output. -->
+    <header id="app-header">
+      <h1>Agentic Dungeon Harness</h1>
+      <div class="campaign-bar">
+        <label class="sr-only" for="campaign-select">Campaign</label>
+        <select id="campaign-select" aria-label="Campaign">
+          <option value="">— no campaign —</option>
+        </select>
+        <button id="resume-btn" type="button">Resume</button>
+        <label class="sr-only" for="new-name">New player name</label>
+        <input id="new-name" type="text" placeholder="Player name" maxlength="40" />
+        <button id="create-btn" type="button">New campaign</button>
+      </div>
+      <div class="campaign-meta">
+        <span id="meta-id">no campaign</span>
+        <span id="meta-turn"></span>
+        <span id="meta-status"></span>
+      </div>
+    </header>
+
     <main id="app-main">
-      <section id="narrative"></section>
+      <section id="narrative-panel">
+        <div id="narrative" role="log" aria-live="polite"></div>
+        <form id="input-form" autocomplete="off">
+          <input
+            id="input-box"
+            type="text"
+            maxlength="500"
+            placeholder="north · look · take brass key · or describe what you do"
+            aria-label="What do you do?"
+            disabled
+          />
+          <button id="submit-btn" type="submit" disabled>Act</button>
+        </form>
+        <p id="hint">
+          Fast-path commands skip the model entirely: north, south, east, west,
+          look, wait, take &lt;item&gt;, attack &lt;target&gt;.
+        </p>
+      </section>
+
       <aside id="sidebar">
-        <div id="minimap"></div>
-        <div id="character"></div>
-        <div id="inspector" hidden></div>
+        <section id="minimap-panel">
+          <h2>Map</h2>
+          <div id="minimap">Placeholder — wired in C3.</div>
+        </section>
+        <section id="character-panel">
+          <h2>Character</h2>
+          <div id="character">Placeholder — wired in C3.</div>
+        </section>
+        <section id="room-panel">
+          <h2>Room</h2>
+          <div id="room"></div>
+        </section>
+        <section id="inspector-panel">
+          <details id="inspector-details">
+            <summary>Context inspector</summary>
+            <div id="inspector">Placeholder — wired in C5.</div>
+          </details>
+        </section>
       </aside>
     </main>
+
+    <div id="toast" role="status" hidden></div>
     <script src="/app.js"></script>
   </body>
 </html>
