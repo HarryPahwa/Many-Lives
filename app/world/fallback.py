@@ -15,6 +15,43 @@ from app.world.room_planner import PlannedRoom
 from app.world.room_validation import validate_room_dressing
 
 
+# Filler scenery for rooms the dresser did not write. Required containers and
+# hiding places are added first; these fill out the rest, and the cell seed
+# chooses which ones and how they sit.
+_FILLER_FEATURES: tuple[tuple[str, str, tuple[FeatureProperty, ...]], ...] = (
+    ("torch sconce", "soot-blackened torch sconce", (FeatureProperty.LIGHT_SOURCE,)),
+    ("brazier", "iron brazier", (FeatureProperty.LIGHT_SOURCE, FeatureProperty.HEAVY)),
+    ("candle stand", "drip-caked candle stand", (FeatureProperty.LIGHT_SOURCE, FeatureProperty.MOVABLE)),
+    ("stone bench", "weathered stone bench", (FeatureProperty.HEAVY,)),
+    ("pillar", "crumbling stone pillar", (FeatureProperty.HEAVY, FeatureProperty.BREAKABLE)),
+    ("altar", "stained offering altar", (FeatureProperty.HEAVY,)),
+    ("statue", "headless stone statue", (FeatureProperty.HEAVY, FeatureProperty.BREAKABLE)),
+    ("weapon rack", "empty weapon rack", (FeatureProperty.MOVABLE, FeatureProperty.BREAKABLE)),
+    ("wooden screen", "splintered wooden screen", (FeatureProperty.MOVABLE, FeatureProperty.BREAKABLE)),
+    ("tapestry", "rotting tapestry", (FeatureProperty.FLAMMABLE, FeatureProperty.MOVABLE)),
+    ("barrel", "staved water barrel", (FeatureProperty.MOVABLE, FeatureProperty.BREAKABLE)),
+    ("lectern", "worm-eaten lectern", (FeatureProperty.MOVABLE, FeatureProperty.BREAKABLE)),
+    ("sarcophagus", "cracked sarcophagus", (FeatureProperty.HEAVY,)),
+    ("chain", "hanging iron chain", (FeatureProperty.HEAVY,)),
+    ("font", "dry stone font", (FeatureProperty.HEAVY,)),
+    ("grate", "rusted drainage grate", (FeatureProperty.HEAVY,)),
+)
+
+
+def _filler_state(rng, properties: tuple[FeatureProperty, ...]) -> dict[str, str]:
+    props = set(properties)
+    state: dict[str, str] = {}
+    if FeatureProperty.LIGHT_SOURCE in props:
+        state["light_state"] = rng.choice(("lit", "unlit"))
+    if FeatureProperty.BREAKABLE in props:
+        state["condition"] = "broken" if rng.randrange(4) == 0 else "intact"
+    if FeatureProperty.MOVABLE in props:
+        state["orientation"] = "overturned" if rng.randrange(5) == 0 else "upright"
+    if "condition" not in state:
+        state["condition"] = "intact"
+    return state
+
+
 ROOM_NAMES = {
     "EMPTY": "Collapsed Passage",
     "ENEMY": "Guard Post",
@@ -56,13 +93,14 @@ def build_fallback_dressing(planned: PlannedRoom, *, seed: int) -> RoomDressing:
             )
     used_names.update(feature.name.casefold() for feature in features)
 
-    generic = [
-        ("torch sconce", "soot-blackened torch sconce", [FeatureProperty.LIGHT_SOURCE], {"light_state": "lit"}),
-        ("stone bench", "weathered stone bench", [FeatureProperty.HEAVY], {"condition": "intact"}),
-        ("wooden screen", "splintered wooden screen", [FeatureProperty.MOVABLE, FeatureProperty.BREAKABLE], {"condition": "intact"}),
-    ]
-    while len(features) < plan.feature_range[0]:
-        kind, base_name, properties, state = generic[len(features) % len(generic)]
+    low = max(len(features), plan.feature_range[0])
+    high = max(low, plan.feature_range[1])
+    target = rng.randint(low, high)
+    catalog = list(_FILLER_FEATURES)
+    rng.shuffle(catalog)
+    for kind, base_name, properties in catalog:
+        if len(features) >= target:
+            break
         name = base_name
         suffix = 2
         while name.casefold() in used_names:
@@ -74,8 +112,8 @@ def build_fallback_dressing(planned: PlannedRoom, *, seed: int) -> RoomDressing:
                 slot_id=None,
                 kind=kind,
                 name=name,
-                properties=properties,
-                initial_state=state,
+                properties=list(properties),
+                initial_state=_filler_state(rng, properties),
             )
         )
 

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from app.domain.rules import resolve_world_action
 from app.domain.types import ActionIntent, ActionType
+from app.services.turn_orchestrator import _debug_murder_query
 
 
 def snapshot(*, enemy_hp=1):
@@ -31,6 +32,111 @@ def snapshot(*, enemy_hp=1):
                            container_items=(), owned_items=())
 
 
+def test_debug_murder_query_reads_the_target_name():
+    assert _debug_murder_query("murder goblin") == "goblin"
+    assert _debug_murder_query("Murder the tunnel goblin") == "tunnel goblin"
+    assert _debug_murder_query("attack goblin") is None
+    assert _debug_murder_query("murder") is None
+    assert _debug_murder_query("reanimate goblin") is None
+
+
+def test_debug_murder_kills_a_creature_by_partial_name():
+    view = snapshot(enemy_hp=100)
+    view.characters[1]["name"] = "tunnel goblin"
+    view.characters[1]["character"]["dodge_pct"] = 100
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.ATTACK, actor_id="player",
+                     params={"query": "goblin", "debug_murder": True}),
+        view, turn_id="murder")
+    assert result.accepted
+    assert [event.type.value for event in result.events] == [
+        "ATTACK_RESOLVED", "ENTITY_DIED", "XP_GAINED"
+    ]
+    assert result.events[0].summary == "You slay tunnel goblin."
+    assert result.events[0].payload["hp_after"] == 0
+    assert result.events[0].payload["damage"] == 100
+    enemy = next(mutation for mutation in result.mutations
+                 if mutation.document_id == "enemy")
+    assert enemy.set_fields["character"]["status"] == "DEAD"
+    assert enemy.set_fields["character"]["hp"] == 0
+
+
+def test_debug_murder_rejects_a_missing_or_ambiguous_name():
+    missing = resolve_world_action(
+        ActionIntent(action_type=ActionType.ATTACK, actor_id="player",
+                     params={"query": "dragon", "debug_murder": True}),
+        snapshot(), turn_id="murder-missing")
+    assert not missing.accepted
+    assert missing.reason == "There's nothing here by that name to murder."
+
+    view = snapshot()
+    view.characters[1]["name"] = "tunnel goblin"
+    other = {
+        "entity_id": "enemy_2", "entity_type": "ENEMY", "name": "cave goblin", "version": 0,
+        "location": {"kind": "CELL", "ref_id": "cell_0_0", "slot": None},
+        "character": dict(view.characters[1]["character"]),
+    }
+    view.characters = (*view.characters, other)
+    ambiguous = resolve_world_action(
+        ActionIntent(action_type=ActionType.ATTACK, actor_id="player",
+                     params={"query": "goblin", "debug_murder": True}),
+        view, turn_id="murder-both")
+    assert not ambiguous.accepted
+    assert ambiguous.reason == "More than one creature matches that name."
+
+
+def test_debug_reanimate_restores_a_fallen_creature_to_full_health():
+    view = snapshot(enemy_hp=40)
+    view.characters[1]["name"] = "tunnel goblin"
+    view.characters[1]["character"]["hp"] = 0
+    view.characters[1]["character"]["status"] = "DEAD"
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.WAIT, actor_id="player",
+                     params={"query": "goblin", "debug_reanimate": True}),
+        view, turn_id="rise")
+    assert result.accepted
+    assert [event.type.value for event in result.events] == ["ENTITY_REANIMATED"]
+    assert result.events[0].summary == "tunnel goblin rises, restored to full health."
+    assert result.events[0].payload["hp_after"] == 40
+    enemy = next(mutation for mutation in result.mutations
+                 if mutation.document_id == "enemy")
+    assert enemy.set_fields["character"]["status"] == "ALIVE"
+    assert enemy.set_fields["character"]["hp"] == 40
+
+
+def test_debug_reanimate_rejects_the_living_the_missing_and_the_ambiguous():
+    living = resolve_world_action(
+        ActionIntent(action_type=ActionType.WAIT, actor_id="player",
+                     params={"query": "goblin", "debug_reanimate": True}),
+        snapshot(), turn_id="rise-living")
+    assert not living.accepted
+    assert living.reason == "goblin is already alive."
+
+    missing = resolve_world_action(
+        ActionIntent(action_type=ActionType.WAIT, actor_id="player",
+                     params={"query": "dragon", "debug_reanimate": True}),
+        snapshot(), turn_id="rise-missing")
+    assert not missing.accepted
+    assert missing.reason == "There's no fallen creature here by that name."
+
+    view = snapshot()
+    view.characters[1]["name"] = "tunnel goblin"
+    view.characters[1]["character"]["hp"] = 0
+    view.characters[1]["character"]["status"] = "DEAD"
+    other = {
+        "entity_id": "enemy_2", "entity_type": "ENEMY", "name": "cave goblin", "version": 0,
+        "location": {"kind": "CELL", "ref_id": "cell_0_0", "slot": None},
+        "character": dict(view.characters[1]["character"]),
+    }
+    view.characters = (*view.characters, other)
+    ambiguous = resolve_world_action(
+        ActionIntent(action_type=ActionType.WAIT, actor_id="player",
+                     params={"query": "goblin", "debug_reanimate": True}),
+        view, turn_id="rise-both")
+    assert not ambiguous.accepted
+    assert ambiguous.reason == "More than one fallen creature matches that name."
+
+
 def test_attack_kills_and_awards_xp_without_dead_enemy_response():
     intent = ActionIntent(action_type=ActionType.ATTACK, actor_id="player",
                           params={"query": "goblin"})
@@ -53,6 +159,62 @@ def test_locked_boss_destination_rejects_move():
     result = resolve_world_action(intent, view, turn_id="turn-2")
     assert not result.accepted
     assert "boss door" in result.reason
+
+
+def test_death_summaries_name_the_killer_and_the_dropped_item():
+    view = snapshot()
+    view.player["character"]["hp"] = 1
+    enemy = view.characters[1]
+    enemy["name"] = "tunnel goblin"
+    enemy["character"]["attack"] = 20
+    view.items = ({
+        "entity_id": "item_5_4_1",
+        "entity_type": "ITEM",
+        "name": "brass key",
+        "version": 0,
+        "location": {"kind": "INVENTORY", "ref_id": "player", "slot": None},
+        "item": {"quantity": 1, "max_stack": 1, "stackable": False,
+                 "guarded_by": [], "status": "ACTIVE", "quest_critical": False},
+    },)
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.WAIT, actor_id="player"),
+        view, turn_id="die")
+    summaries = " ".join(event.summary for event in result.events)
+    assert "tunnel goblin struck you for" in summaries
+    assert "You are slain by tunnel goblin." in summaries
+    assert "You drop brass key." in summaries
+    assert "enemy" not in summaries
+    assert "item_5_4_1" not in summaries
+
+
+def test_talk_to_an_enemy_by_id_is_dialogue():
+    """Adjudicated talk names the creature by id. An enemy is a valid target."""
+    view = snapshot()
+    view.characters[1]["name"] = "tunnel goblin"
+    view.characters[1]["character"]["knowledge"] = [{
+        "fact_id": "fact_1", "type": "CELL_HINT", "subject_cell_id": "cell_1_0",
+        "hint": "Eastward.", "revealed_to": [],
+    }]
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.TALK, actor_id="player", targets=["enemy"],
+                     params={"utterance": "ask tunnel goblin his name"}),
+        view, turn_id="talk-enemy")
+    assert result.accepted
+    kinds = [event.type.value for event in result.events]
+    assert kinds[0] == "DIALOGUE"
+    assert result.events[0].payload["npc_id"] == "enemy"
+    assert result.events[0].payload["utterance"] == "ask tunnel goblin his name"
+    assert "FACT_REVEALED" not in kinds
+    assert "ATTACK_RESOLVED" in kinds
+
+
+def test_talk_to_nobody_is_still_rejected():
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.TALK, actor_id="player",
+                     params={"query": "dragon"}),
+        snapshot(), turn_id="talk-missing")
+    assert not result.accepted
+    assert result.reason == "There's no one here by that name to speak with."
 
 
 def test_talk_reveals_allowed_fact_and_rumors_cell():

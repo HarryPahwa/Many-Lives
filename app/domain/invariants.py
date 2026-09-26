@@ -96,8 +96,11 @@ def check_invariants(campaign: Mapping[str, Any], cells: Sequence[Mapping[str, A
         position = (event.get("turn_sequence", 0), event.get("event_index", 0))
         if event.get("actor_id") in deaths and position > deaths[event["actor_id"]]:
             fail(6, "dead entity acted after death", str(event["actor_id"]), str(event.get("event_id", "")))
-        if event.get("type") == "ENTITY_DIED" and event.get("payload", {}).get("entity_id"):
-            deaths[str(event["payload"]["entity_id"])] = position
+        payload_id = str((event.get("payload") or {}).get("entity_id") or "")
+        if event.get("type") == "ENTITY_DIED" and payload_id:
+            deaths[payload_id] = position
+        elif event.get("type") == "ENTITY_REANIMATED" and payload_id:
+            deaths.pop(payload_id, None)
 
     for entity in entities:
         if entity.get("entity_type") in {"NPC", "ENEMY", "BOSS"}:

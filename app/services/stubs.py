@@ -715,6 +715,33 @@ class StubEngine:
         if at == "LOOK":
             return EngineResolution(True, outcome_summary="You take in the room.")
 
+        if at == "WAIT" and intent.params.get("debug_reanimate"):
+            want = str(intent.params.get("query") or "").lower()
+            cell = camp.cells[camp.player_cell]
+            fallen = [
+                c for c in cell.characters
+                if c.status == "DEAD" and want and want in c.name.lower()
+            ]
+            if len(fallen) != 1:
+                standing = [
+                    c for c in cell.characters
+                    if c.status == "ALIVE" and want and want in c.name.lower()
+                ]
+                if len(fallen) > 1:
+                    reason = "More than one fallen creature matches that name."
+                elif len(standing) == 1:
+                    reason = f"{standing[0].name} is already alive."
+                else:
+                    reason = "There's no fallen creature here by that name."
+                return EngineResolution(False, reason=reason)
+            target = fallen[0]
+            return EngineResolution(
+                True,
+                effects=[{"type": "REANIMATE", "target_id": target.id}],
+                event_types=["ENTITY_REANIMATED"],
+                outcome_summary=f"{target.name} rises, restored to full health.",
+            )
+
         if at == "WAIT":
             return EngineResolution(True, outcome_summary="You wait, listening.")
 
@@ -736,23 +763,32 @@ class StubEngine:
             )
 
         if at == "ATTACK":
-            want = (intent.targets or [""])[0].lower()
-            cell = camp.cells[camp.player_cell]
-            target = next(
-                (
-                    c
-                    for c in cell.characters
-                    if want in c.name.lower() and c.status == "ALIVE"
-                ),
-                None,
+            guaranteed = bool(intent.params.get("debug_murder"))
+            want = (
+                str(intent.params.get("query") or "").lower()
+                if guaranteed
+                else (intent.targets or [""])[0].lower()
             )
+            cell = camp.cells[camp.player_cell]
+            matches = [
+                c for c in cell.characters
+                if want and want in c.name.lower() and c.status == "ALIVE"
+            ]
+            if guaranteed and len(matches) != 1:
+                reason = (
+                    "More than one creature matches that name."
+                    if len(matches) > 1
+                    else "There's nothing here by that name to murder."
+                )
+                return EngineResolution(False, reason=reason)
+            target = matches[0] if guaranteed else (matches[0] if matches else None)
             if target is None:
                 return EngineResolution(False, reason=f"There is no {want} to attack.")
             # Code RNG only (§5.8) — never model output.
             rng = random.Random(f"{camp.seed}:{camp.current_turn}:{target.id}")
             roll = rng.randint(1, 20)
-            damage = max(1, 5 + rng.choice([-1, 0, 1]) - 1)
-            died = target.hp - damage <= 0
+            damage = target.hp if guaranteed else max(1, 5 + rng.choice([-1, 0, 1]) - 1)
+            died = True if guaranteed else target.hp - damage <= 0
             return EngineResolution(
                 True,
                 effects=[{"type": "DAMAGE", "target_id": target.id, "amount": damage}],
@@ -801,6 +837,12 @@ class StubEngine:
                             if ch.hp == 0:
                                 ch.status = "DEAD"
                                 ch.disposition = None
+            elif kind == "REANIMATE":
+                for cell in camp.cells.values():
+                    for ch in cell.characters:
+                        if ch.id == effect["target_id"]:
+                            ch.hp = ch.max_hp
+                            ch.status = "ALIVE"
 
         event_ids = [f"evt_{seq}_{i}" for i in range(len(resolution.event_types))]
         for index, event_type in enumerate(resolution.event_types):
