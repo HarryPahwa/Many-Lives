@@ -12,7 +12,7 @@ from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
 
 from app.domain.rules import Resolution
-from app.domain.types import TurnResult
+from app.domain.types import EngineTurnResult
 from app.persistence.views import WorldView, freeze
 
 
@@ -250,8 +250,8 @@ class Repository:
         )
 
     def reject_turn(
-        self, campaign_id: str, turn_id: str, result: TurnResult
-    ) -> TurnResult:
+        self, campaign_id: str, turn_id: str, result: EngineTurnResult
+    ) -> EngineTurnResult:
         stored = result.model_dump(mode="json")
         update = self._db.turns.update_one(
             {"campaign_id": campaign_id, "turn_id": turn_id, "status": "RECEIVED"},
@@ -262,7 +262,7 @@ class Repository:
             return result
         existing = self.get_turn(campaign_id, turn_id)
         if existing and existing.get("result"):
-            return TurnResult.model_validate(existing["result"])
+            return EngineTurnResult.model_validate(existing["result"])
         raise ConcurrencyConflict(f"Turn reservation lost: {turn_id}")
 
     def create_campaign(
@@ -443,8 +443,8 @@ class Repository:
         campaign_id: str,
         player_id: str,
         resolution: Resolution,
-        turn_result: TurnResult | None = None,
-    ) -> TurnResult | None:
+        turn_result: EngineTurnResult | None = None,
+    ) -> EngineTurnResult | None:
         """Commit one turn, using the A4 CAS path for versioned resolutions."""
         if resolution.expected_turn is not None:
             return self._commit_versioned_turn(
@@ -548,8 +548,8 @@ class Repository:
         campaign_id: str,
         player_id: str,
         resolution: Resolution,
-        turn_result: TurnResult | None,
-    ) -> TurnResult:
+        turn_result: EngineTurnResult | None,
+    ) -> EngineTurnResult:
         if resolution.expected_turn is None:
             raise ValueError("Versioned resolution requires expected_turn")
         if not resolution.accepted:
@@ -561,7 +561,7 @@ class Repository:
         if not turn_id:
             raise ValueError("Versioned resolution requires a turn_id")
         if turn_result is None:
-            turn_result = TurnResult(
+            turn_result = EngineTurnResult(
                 turn_id=turn_id,
                 turn_sequence=sequence,
                 accepted=True,
@@ -573,7 +573,7 @@ class Repository:
         if existing and existing.get("status") in {
             "REJECTED", "COMMITTED", "NARRATED", "NARRATION_FAILED"
         }:
-            return TurnResult.model_validate(existing["result"])
+            return EngineTurnResult.model_validate(existing["result"])
         if existing is None:
             self.begin_turn(campaign_id, turn_id, player_id, "", path="FAST")
 
@@ -679,7 +679,7 @@ class Repository:
         except DuplicateKeyError:
             replay = self.get_turn(campaign_id, turn_id)
             if replay and replay.get("result"):
-                return TurnResult.model_validate(replay["result"])
+                return EngineTurnResult.model_validate(replay["result"])
             raise
         return turn_result
 
