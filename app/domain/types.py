@@ -153,6 +153,17 @@ class FeatureStateKey(StrEnum):
     LIGHT_STATE = "light_state"
 
 
+class FeatureState(BaseModel):
+    """Closed persistent feature-state keys used by model-facing contracts."""
+
+    model_config = ConfigDict(extra="forbid")
+    open_state: str | None = None
+    lock_state: str | None = None
+    condition: str | None = None
+    orientation: str | None = None
+    light_state: str | None = None
+
+
 class Archetype(StrEnum):
     EMPTY = "EMPTY"
     ENEMY = "ENEMY"
@@ -266,7 +277,7 @@ class CreateFeature(BaseModel):
     kind: str
     name: str = Field(max_length=40)
     properties: list[FeatureProperty]
-    state: dict[str, str]
+    state: FeatureState
 
 
 class SetDisposition(BaseModel):
@@ -398,7 +409,7 @@ class FeatureDressing(BaseModel):
     kind: str
     name: str = Field(max_length=40)
     properties: list[FeatureProperty]
-    initial_state: dict[str, str]
+    initial_state: FeatureState
 
 
 class EntityDressing(BaseModel):
@@ -495,3 +506,142 @@ class TurnResult(BaseModel):
     current_cell_id: str
     events: list[Event] = Field(default_factory=list)
     outcome_summary: str = ""
+
+
+# Harness-only contracts extend the engine's canonical types above.  They do
+# not replace the engine's room, event, action, or result shapes.
+class DomainModel(BaseModel):
+    """Base model for strict harness contracts."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class ActionClass(StrEnum):
+    MOVE = "MOVE"
+    COMBAT = "COMBAT"
+    ITEM = "ITEM"
+    SEARCH = "SEARCH"
+    CREATIVE = "CREATIVE"
+    SOCIAL = "SOCIAL"
+    RESUME = "RESUME"
+    NARRATION_DEFAULT = "NARRATION_DEFAULT"
+
+
+class Role(StrEnum):
+    DRESSER = "DRESSER"
+    ADJUDICATOR = "ADJUDICATOR"
+    NARRATOR = "NARRATOR"
+    VERIFIER = "VERIFIER"
+    MEMORY_SUMMARIZER = "MEMORY_SUMMARIZER"
+
+
+class MemoryType(StrEnum):
+    RELATIONSHIP = "RELATIONSHIP"
+    DIALOGUE = "DIALOGUE"
+    COMBAT = "COMBAT"
+    DISCOVERY = "DISCOVERY"
+    ITEM = "ITEM"
+    ENVIRONMENT = "ENVIRONMENT"
+    QUEST = "QUEST"
+    BOSS = "BOSS"
+
+
+class PolicyStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    CANDIDATE = "CANDIDATE"
+    RETIRED = "RETIRED"
+    REJECTED = "REJECTED"
+
+
+class PolicyCreator(StrEnum):
+    HUMAN = "HUMAN"
+    OPTIMIZER = "OPTIMIZER"
+
+
+class VectorMemoryConfig(DomainModel):
+    enabled: bool
+    top_k: int = 0
+    memory_types: list[MemoryType] | None = None
+    entity_filter: bool = False
+    cell_filter: bool = False
+
+
+class RetrievalQuery(DomainModel):
+    """The campaign-scoped input supplied to a memory retriever."""
+
+    campaign_id: str
+    query_text: str
+    config: VectorMemoryConfig
+    entity_ids: list[str] = Field(default_factory=list)
+    cell_id: str | None = None
+    recent_event_ids: list[str] = Field(default_factory=list)
+
+
+class RetrievedMemory(DomainModel):
+    """A retrieval projection of a persisted memory, including its search score."""
+
+    memory_id: str = Field(alias="_id")
+    campaign_id: str
+    schema_version: int = 1
+    memory_type: MemoryType
+    entity_ids: list[str]
+    cell_id: str | None
+    source_event_ids: list[str]
+    created_turn: int
+    importance: float
+    text: str
+    embedding_model: str
+    created_at: str
+    score: float
+
+
+class RetrievalResult(DomainModel):
+    """Ordered memories and non-fatal retrieval status flags."""
+
+    memories: list[RetrievedMemory] = Field(default_factory=list)
+    flags: list[str] = Field(default_factory=list)
+
+
+class ClassRule(DomainModel):
+    mandatory: list[str]
+    conditional: list[str]
+    recent_event_window: int
+    vector_memory: VectorMemoryConfig
+
+
+class ContextPolicy(DomainModel):
+    policy_id: str = Field(alias="_id")
+    version: int
+    status: PolicyStatus
+    parent_version: int | None
+    created_by: PolicyCreator
+    rules: dict[ActionClass, ClassRule]
+    budget: dict[str, int]
+    promotion_metrics: dict[str, float] | None
+    created_at: str
+
+
+class MemoryReference(DomainModel):
+    id: str
+    score: float
+
+
+class ContextManifest(DomainModel):
+    policy_version: int
+    action_class: ActionClass
+    components: list[str]
+    entity_ids: list[str]
+    event_ids: list[str]
+    memories: list[MemoryReference]
+    estimated_tokens: int
+    flags: list[str]
+
+
+class ModelCallRecord(DomainModel):
+    role: Role
+    model: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: int
+    attempts: int
+    schema_valid: bool
