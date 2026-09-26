@@ -147,6 +147,11 @@ class TurnResult(_Wire):
     visible_cell: VisibleCell
     campaign_status: str
     debug_available: bool = False
+    #: Room visuals are optional. The client must not probe the visual routes
+    #: when this is false: the request would 404, and the browser logs that as
+    #: a console error even when the JS handles it — a visible behaviour change
+    #: for a feature that is supposed to be inert when off (VIS-03).
+    visuals_enabled: bool = False
 
 
 class ResumeResult(_Wire):
@@ -162,6 +167,7 @@ class ResumeResult(_Wire):
     # Carried here as well as on TurnResult: the demo opens the inspector
     # right after resuming (§29.2), before any turn has been taken.
     debug_available: bool = False
+    visuals_enabled: bool = False
 
 
 # --------------------------------------------------------------------------

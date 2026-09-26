@@ -30,6 +30,18 @@
 
     <main id="app-main">
       <section id="narrative-panel">
+        <!-- Room visuals (optional). Stays hidden unless the server says the
+             feature is on, so the layout is unchanged when it is off. -->
+        <section id="visual-panel" hidden>
+          <figure id="visual-figure">
+            <img id="visual-img" alt="" />
+            <figcaption id="visual-caption"></figcaption>
+          </figure>
+          <div class="visual-actions">
+            <span id="visual-badge"></span>
+            <button id="visual-btn" type="button">Generate visual</button>
+          </div>
+        </section>
         <div id="narrative" role="log" aria-live="polite"></div>
         <form id="input-form" autocomplete="off">
           <input

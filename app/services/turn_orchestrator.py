@@ -279,6 +279,7 @@ class TurnOrchestrator:
                 narration_source=source,
                 manifest=manifest,
                 debug_available=get_settings().debug_endpoints,
+                visuals_enabled=get_settings().enable_room_visuals,
             )
 
     # ------------------------------------------------------------------
@@ -426,6 +427,7 @@ class TurnOrchestrator:
             visible_cell=view.visible_cell,
             campaign_status=view.campaign_status,
             debug_available=get_settings().debug_endpoints,
+            visuals_enabled=get_settings().enable_room_visuals,
         )
 
 
