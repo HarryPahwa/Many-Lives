@@ -16,6 +16,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import routes_campaigns, routes_debug, routes_evals, routes_turns
+from app.services.stubs import ConcurrencyConflict
+from app.services.turn_orchestrator import CampaignNotActive, CampaignNotFound
 
 logging.basicConfig(level=logging.INFO)
 
@@ -57,6 +59,33 @@ async def _validation_error(_: Request, exc: RequestValidationError) -> JSONResp
     message = first.get("msg", "Invalid request.")
     detail = f"{location}: {message}" if location else message
     return _error(422, detail, code="VALIDATION_ERROR")
+
+
+# Domain failures are mapped centrally rather than per route, so a handler
+# that forgets to catch one cannot return a bare "Internal Server Error"
+# outside the §17.1 envelope.
+@app.exception_handler(CampaignNotFound)
+async def _not_found(_: Request, __: CampaignNotFound) -> JSONResponse:
+    return _error(404, "Unknown campaign.")
+
+
+@app.exception_handler(CampaignNotActive)
+async def _not_active(_: Request, __: CampaignNotActive) -> JSONResponse:
+    return _error(409, "This campaign is not accepting turns.")
+
+
+@app.exception_handler(ConcurrencyConflict)
+async def _conflict(_: Request, __: ConcurrencyConflict) -> JSONResponse:
+    return _error(409, "The campaign changed during this turn; retry.")
+
+
+@app.exception_handler(Exception)
+async def _unexpected(_: Request, exc: Exception) -> JSONResponse:
+    # Last resort. The message is deliberately generic: an exception string can
+    # carry internal detail, and §22 keeps that off the wire. The traceback
+    # goes to the server log instead.
+    logging.getLogger("many_lives").exception("unhandled error: %s", type(exc).__name__)
+    return _error(500, "Something went wrong handling that request.", code="INTERNAL")
 
 
 app.include_router(routes_campaigns.router)

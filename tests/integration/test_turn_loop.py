@@ -505,3 +505,56 @@ def test_adjudication_failure_records_a_machine_readable_reason_code(client: Tes
     assert client.get(f"/api/campaigns/{campaign_id}").json()["current_turn"] == (
         result["turn_sequence"]
     )
+
+
+# ---------------------------------------------------------------------------
+# Every error uses the §17.1 envelope, including unhandled ones
+# ---------------------------------------------------------------------------
+
+
+def test_a_non_active_campaign_is_409_not_a_bare_500(client: TestClient):
+    """A domain exception escaping a route must not bypass §17.1.
+
+    Regression: CampaignNotActive raised inside the create route produced a
+    plain-text "Internal Server Error" with no envelope and the wrong status.
+    """
+    from app.services import stubs
+
+    class FinishedEngine(stubs.StubEngine):
+        def get_campaign(self, campaign_id):
+            summary = super().get_campaign(campaign_id)
+            if summary is not None:
+                summary.status = "COMPLETED"
+            return summary
+
+    stubs.set_engine(FinishedEngine())
+    response = client.post("/api/campaigns", json={"player_name": "Ada", "seed": 9})
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CONFLICT"
+
+
+def test_an_unexpected_error_is_reported_in_the_envelope_without_internals():
+    """§22 — an exception string may carry internal detail; keep it off the wire.
+
+    Uses raise_server_exceptions=False so the client returns the response the
+    way a real HTTP client would, rather than re-raising in-process.
+    """
+    from app.services import stubs
+
+    secret = "connection string postgres://user:hunter2@internal-host/db"
+
+    class ExplodingEngine(stubs.StubEngine):
+        def list_campaigns(self):
+            raise RuntimeError(secret)
+
+    stubs.set_engine(ExplodingEngine())
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/api/campaigns")
+
+    assert response.status_code == 500
+    body = response.json()
+    assert set(body) == {"error"}
+    assert body["error"]["code"] == "INTERNAL"
+    assert "hunter2" not in response.text
+    assert "postgres" not in response.text
