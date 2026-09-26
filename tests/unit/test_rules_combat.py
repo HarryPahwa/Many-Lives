@@ -92,3 +92,35 @@ def test_persuasion_records_check_and_updates_disposition():
     npc_mutation = next(value for value in result.mutations if value.document_id == "enemy")
     disposition = npc_mutation.set_fields["character"]["disposition"]["player"]
     assert -100 <= disposition["trust"] <= 100
+
+
+def test_successful_steal_records_disposition_on_check_event():
+    view = snapshot()
+    npc = view.characters[1]
+    npc["entity_type"] = "NPC"
+    npc["name"] = "keeper"
+    npc["character"]["speed"] = -20
+    item = {
+        "entity_id": "item_key",
+        "entity_type": "ITEM",
+        "name": "key",
+        "version": 0,
+        "location": {"kind": "INVENTORY", "ref_id": "enemy", "slot": None},
+        "item": {"subtype": "KEY", "quantity": 1, "stackable": False},
+    }
+    view.owned_items = (item,)
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.STEAL, actor_id="player",
+                     params={"query": "key", "target_query": "keeper"}),
+        view,
+        turn_id="steal-1",
+    )
+    assert result.accepted
+    assert result.events[0].type.value == "CHECK_RESOLVED"
+    assert "disposition" in result.events[0].payload
+    assert result.events[1].type.value == "ITEM_TRANSFERRED"
+    assert "disposition" not in result.events[1].payload
+    npc_mutation = next(value for value in result.mutations if value.document_id == "enemy")
+    assert npc_mutation.set_fields["character"]["disposition"]["player"][
+        "reason_event_ids"
+    ] == [result.events[0].event_id]

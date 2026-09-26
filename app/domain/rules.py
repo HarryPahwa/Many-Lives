@@ -425,17 +425,20 @@ def resolve_world_action(
         current = npc["character"].get("disposition", {}).get(player["entity_id"], {})
         return DispositionState(current.get("state", "NEUTRAL")), int(current.get("trust", 0))
 
-    def change_disposition(npc: dict[str, Any], delta: int) -> None:
+    def change_disposition(
+        npc: dict[str, Any], delta: int, *, reason_event_index: int | None = None
+    ) -> None:
         state, trust = disposition_for(npc)
         outcome = adjust_disposition(state, trust, delta)
         current = npc["character"].setdefault("disposition", {}).get(player["entity_id"], {})
-        reasons = [*current.get("reason_event_ids", ()), f"evt_{sequence}_{len(events) - 1}"][-10:]
+        source_index = len(events) - 1 if reason_event_index is None else reason_event_index
+        reasons = [*current.get("reason_event_ids", ()), f"evt_{sequence}_{source_index}"][-10:]
         npc["character"]["disposition"][player["entity_id"]] = {
             "state": outcome.state_after.value,
             "trust": outcome.trust_after,
             "reason_event_ids": reasons,
         }
-        events[-1].payload["disposition"] = {
+        events[source_index].payload["disposition"] = {
             "trust_before": outcome.trust_before,
             "trust_after": outcome.trust_after,
             "applied_delta": outcome.applied_delta,
@@ -534,6 +537,7 @@ def resolve_world_action(
                "dc": outcome.dc, "success": outcome.success,
                "rolls": [record.__dict__ for record in outcome.rolls]},
               f"Steal {'succeeded' if outcome.success else 'failed'}.")
+        check_event_index = len(events) - 1
         if outcome.success:
             transfer = take_item(all_items, item_id=stolen["entity_id"],
                                  player_id=player["entity_id"], current_cell_id=current_id,
@@ -549,7 +553,11 @@ def resolve_world_action(
         else:
             target["character"]["alerted"] = True
         if target["entity_type"] == "NPC":
-            change_disposition(target, -20 if outcome.success else -40)
+            change_disposition(
+                target,
+                -20 if outcome.success else -40,
+                reason_event_index=check_event_index,
+            )
         environment_response(current_id)
     elif action == ActionType.ATTACK:
         query = str(intent.params.get("target_id") or intent.params.get("query") or "")

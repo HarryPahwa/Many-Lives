@@ -66,6 +66,7 @@ def resolve_check(kind: CheckKind, player: Mapping[str, Any], *, rng: TurnRng,
         if target is None:
             raise ValueError("Steal requires a target")
         dc = 10 + int(target["character"]["speed"])
+        relationship = 0
         if target["character"].get("alerted"):
             relationship -= 2
     elif kind == CheckKind.SEARCH:

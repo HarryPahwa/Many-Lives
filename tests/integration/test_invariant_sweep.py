@@ -33,3 +33,30 @@ def test_fifty_committed_turns_have_zero_invariant_failures():
         assert record["invariants"] == {"checked": 15, "failures": []}
     assert repository.check_campaign_invariants(CAMPAIGN_ID).passed
     assert db.campaigns.find_one({"_id": CAMPAIGN_ID})["current_turn"] == 50
+
+
+def test_post_commit_checker_failure_does_not_report_committed_turn_as_failed(monkeypatch):
+    db = mongomock.MongoClient().dungeon
+    create_btree_indexes(db)
+    repository = Repository(db, transaction_runner=ImmediateTransactions())
+    created = create_campaign(repository, "Ada", seed=506, campaign_id=CAMPAIGN_ID)
+    turn_id = "checker-failure"
+    repository.begin_turn(CAMPAIGN_ID, turn_id, created.player_id, "look")
+    resolution = resolve_world_action(
+        ActionIntent(action_type=ActionType.LOOK, actor_id=created.player_id),
+        repository.load_world_view(CAMPAIGN_ID, created.player_id),
+        turn_id=turn_id,
+    )
+    monkeypatch.setattr(
+        repository,
+        "check_campaign_invariants",
+        lambda _campaign_id: (_ for _ in ()).throw(RuntimeError("checker unavailable")),
+    )
+
+    result = repository.commit_turn(CAMPAIGN_ID, created.player_id, resolution)
+
+    assert result is not None and result.accepted
+    assert db.campaigns.find_one({"_id": CAMPAIGN_ID})["current_turn"] == 1
+    record = repository.get_turn(CAMPAIGN_ID, turn_id)
+    assert record["status"] == "COMMITTED"
+    assert record["invariants"]["failures"][0]["invariant"] == "CHECKER"

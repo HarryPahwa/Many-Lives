@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import logging
 from typing import Any, Literal, TypeVar
 
 from pymongo import ReturnDocument
@@ -21,6 +22,8 @@ from app.persistence.views import WorldView, freeze
 T = TypeVar("T")
 TransactionCallback = Callable[[Any | None], T]
 TransactionRunner = Callable[[TransactionCallback[T]], T]
+
+logger = logging.getLogger("many_lives.persistence")
 
 
 class PersistenceError(RuntimeError):
@@ -698,11 +701,30 @@ class Repository:
             raise
         # Post-commit by design: invariant failures describe committed state
         # and never roll it back (TDD §9.10).
-        report = self.check_campaign_invariants(campaign_id)
-        self._db.turns.update_one(
-            {"campaign_id": campaign_id, "turn_id": turn_id},
-            {"$set": {"invariants": report.to_document()}},
-        )
+        try:
+            report = self.check_campaign_invariants(campaign_id)
+            invariant_document = report.to_document()
+        except Exception as exc:
+            # The canonical transaction has committed. Diagnostics must never
+            # turn that success into an apparent failed request/retry.
+            logger.exception(
+                "post-commit invariant sweep failed",
+                extra={"campaign_id": campaign_id, "turn_id": turn_id},
+            )
+            invariant_document = {
+                "checked": 0,
+                "failures": [{"invariant": "CHECKER", "message": str(exc)}],
+            }
+        try:
+            self._db.turns.update_one(
+                {"campaign_id": campaign_id, "turn_id": turn_id},
+                {"$set": {"invariants": invariant_document}},
+            )
+        except Exception:
+            logger.exception(
+                "post-commit invariant result could not be stored",
+                extra={"campaign_id": campaign_id, "turn_id": turn_id},
+            )
         return turn_result
 
 

@@ -34,6 +34,18 @@ def test_dc_and_stat_tables():
     assert skill.dc == 18
 
 
+def test_steal_ignores_disposition_and_only_penalizes_alerted_target():
+    calm = resolve_check(CheckKind.STEAL, actor(), target=target(), rng=TurnRng(3, 1),
+                         disposition=DispositionState.HOSTILE)
+    alerted_target = target()
+    alerted_target["character"]["alerted"] = True
+    alerted = resolve_check(CheckKind.STEAL, actor(), target=alerted_target,
+                            rng=TurnRng(3, 1), disposition=DispositionState.FRIENDLY)
+    assert calm.relationship_modifier == 0
+    assert alerted.relationship_modifier == -2
+    assert alerted.total == calm.total - 2
+
+
 def test_disposition_hysteresis_and_hostile_positive_halving():
     hostile = adjust_disposition(DispositionState.NEUTRAL, 0, -60)
     assert hostile.state_after == DispositionState.HOSTILE
