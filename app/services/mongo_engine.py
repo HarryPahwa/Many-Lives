@@ -134,6 +134,7 @@ class MongoEngine:
         return CommitResult(
             turn_sequence=(raw.expected_turn or 0) + 1,
             event_ids=[event.event_id for event in raw.events],
+            events=[event.model_dump(mode="json") for event in raw.events],
         )
 
     def generate_room(self, campaign_id: str, key: str) -> None:

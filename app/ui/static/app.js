@@ -701,6 +701,9 @@ async function logTurnTrace(result) {
     ? `${verdict} [${debug.reason_code}]` : verdict);
   const events = (result.outcome && result.outcome.events) || [];
   row("events", events.length ? events.join(", ") : "none (no state change)");
+  if (result.accepted && result.outcome && result.outcome.summary) {
+    row("last event", result.outcome.summary);
+  }
   const rolls = (result.outcome && result.outcome.rolls) || [];
   if (rolls.length) {
     row("rolls", rolls.map((r) => `${r.purpose} d${r.sides}=${r.value}`).join(", "));
