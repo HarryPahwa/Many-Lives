@@ -1,1 +1,242 @@
-/* UI styles (TDD §18). Left narrative ~60%, right sidebar. Scaffold only. */
+/* UI styles (TDD §18). Left narrative ~60%, right sidebar. */
+
+:root {
+  --bg: #14110f;
+  --panel: #1d1917;
+  --panel-2: #262120;
+  --line: #3a322e;
+  --text: #e8e0d6;
+  --muted: #9b9086;
+  --accent: #c9a227;
+  --player: #8fb8de;
+  --reject: #d98a72;
+  --system: #7f766d;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 ui-serif, Georgia, "Times New Roman", serif;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ---- header ---- */
+
+#app-header {
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+}
+
+#app-header h1 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+
+.campaign-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.campaign-meta {
+  margin-left: auto;
+  display: flex;
+  gap: 14px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+select,
+input[type="text"],
+button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled,
+input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---- layout ---- */
+
+#app-main {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(280px, 1.4fr);
+  gap: 16px;
+  padding: 16px 20px;
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  #app-main {
+    grid-template-columns: 1fr;
+  }
+}
+
+section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+
+#sidebar {
+  display: grid;
+  gap: 12px;
+}
+
+#sidebar h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+/* ---- narrative ---- */
+
+#narrative {
+  height: 58vh;
+  min-height: 300px;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
+.log-entry {
+  margin: 0 0 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.log-player {
+  color: var(--player);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px;
+}
+
+.log-rejected {
+  color: var(--reject);
+  font-style: italic;
+  border-left: 2px solid var(--reject);
+  padding-left: 10px;
+}
+
+.log-system {
+  color: var(--system);
+  font-size: 12.5px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+#input-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+#input-box {
+  flex: 1;
+  font-size: 14px;
+}
+
+#hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--system);
+}
+
+/* ---- room panel ---- */
+
+#room h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  color: var(--accent);
+}
+
+#room h4 {
+  margin: 10px 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+#room ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.room-desc {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+/* ---- inspector ---- */
+
+#inspector-panel summary {
+  cursor: pointer;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+#inspector {
+  margin-top: 10px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* ---- toast ---- */
+
+#toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  max-width: 380px;
+  padding: 10px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--reject);
+  border-radius: 6px;
+  font-size: 13px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 45%);
+}
