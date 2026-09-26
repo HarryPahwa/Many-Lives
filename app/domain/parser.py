@@ -1,8 +1,62 @@
-"""Fast-path parser (TDD §13.2).
+"""Fast-path command parser (TDD §13.1).
 
-Maps unambiguous commands to ActionIntent (move/attack/take/equip/use/...).
-Name resolution: exact -> prefix -> substring against visible entities,
-features, carried items. Zero matches -> fall through to adjudicator;
-multiple -> AMBIGUOUS_TARGET.
-Scaffold only.
+Deterministic string matching for standard game commands (0ms, skips LLM).
 """
+
+from app.domain.types import ActionIntent, ActionType
+
+
+DIRECTION_MAP = {
+    "north": "NORTH",
+    "n": "NORTH",
+    "south": "SOUTH",
+    "s": "SOUTH",
+    "east": "EAST",
+    "e": "EAST",
+    "west": "WEST",
+    "w": "WEST",
+}
+
+
+def parse_fast_path(text: str, actor_id: str) -> ActionIntent | None:
+    """Attempt to parse text input into a deterministic ActionIntent.
+    
+    Returns None if input is free-form and requires LLM adjudication.
+    """
+    clean = text.strip().lower()
+    if not clean:
+        return None
+
+    # Directions / Move
+    if clean in DIRECTION_MAP:
+        return ActionIntent(
+            action_type=ActionType.MOVE,
+            actor_id=actor_id,
+            params={"direction": DIRECTION_MAP[clean]},
+        )
+    
+    parts = clean.split(maxsplit=1)
+    cmd = parts[0]
+    arg = parts[1] if len(parts) > 1 else ""
+
+    if cmd in ("go", "move") and arg in DIRECTION_MAP:
+        return ActionIntent(
+            action_type=ActionType.MOVE,
+            actor_id=actor_id,
+            params={"direction": DIRECTION_MAP[arg]},
+        )
+
+    if cmd == "look":
+        return ActionIntent(
+            action_type=ActionType.LOOK,
+            actor_id=actor_id,
+            targets=[arg] if arg else [],
+        )
+
+    if cmd == "wait":
+        return ActionIntent(
+            action_type=ActionType.WAIT,
+            actor_id=actor_id,
+        )
+
+    return None
