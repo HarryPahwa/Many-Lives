@@ -29,3 +29,6 @@ htmlcov/
 # Local stub world state (STUB_STATE_FILE)
 .state/
 *.state.json
+
+# Room visual assets (file store)
+.visuals/

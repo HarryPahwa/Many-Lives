@@ -31,6 +31,8 @@ _OWNED_COLLECTIONS = (
     "memories",
     "turns",
     "quests",
+    "room_visuals",
+    "visual_assets",
 )
 
 

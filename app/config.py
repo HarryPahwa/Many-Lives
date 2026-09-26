@@ -27,6 +27,22 @@ class Settings(BaseSettings):
     embedding_model: str = ""
     embedding_dims: int = 1536
 
+    # Room visuals (optional feature; see docs/Room_Visuals_TDD.md).
+    # Every one of these is inert while enable_room_visuals is false.
+    enable_room_visuals: bool = False
+    auto_update_room_visuals: bool = False
+    image_client: str = "auto"  # auto | fake | openrouter
+    image_model: str = "openai/gpt-image-1-mini"
+    image_aspect_ratio: str = "3:2"  # 16:9 is rejected by the default model
+    image_quality: str = "low"
+    image_output_compression: int = 70
+    image_timeout_s: int = 90
+    image_edit_include_base: bool = False
+    visual_store: str = "auto"  # auto | mongo | file | memory
+    visuals_dir: str = ".visuals"
+    visual_max_edits: int = 4
+    visual_keep_revisions: int = 5
+
     # Toggles
     use_fake_models: bool = True
     debug_endpoints: bool = False

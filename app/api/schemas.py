@@ -301,3 +301,25 @@ class DebugContext(_Wire):
 
 CreateCampaignResponse.model_rebuild()
 ResumeResult.model_rebuild()
+
+
+# --------------------------------------------------------------------------
+# Room visuals (optional feature; docs/Room_Visuals_TDD.md §10.1)
+# --------------------------------------------------------------------------
+
+
+class RoomVisualStatus(_Wire):
+    """State of one room's illustration.
+
+    `image_url` is present whenever an asset exists — including while
+    GENERATING or after a FAILED attempt — so the UI keeps showing the previous
+    picture instead of flashing to empty.
+    """
+
+    cell_id: str
+    status: Literal["NONE", "GENERATING", "READY", "FAILED"]
+    dirty: bool = False
+    revision: int = 0
+    image_url: str | None = None
+    auto_update: bool = False
+    error_code: str | None = None
