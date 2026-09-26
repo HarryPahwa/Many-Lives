@@ -203,6 +203,8 @@ class TurnOrchestrator:
         record.accepted_effect_types = [str(e.get("type")) for e in resolution.effects]
         record.committed_at = _now()
         engine.put_turn(record)
+        if engine.CANONICAL_EVENTS:
+            harness.after_commit(view, commit.event_ids)
 
         # 6/7. Post-commit: narrate from committed state. A narrator failure
         #      must not undo the commit (§7.1.7, §21).

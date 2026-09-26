@@ -196,6 +196,8 @@ class EnginePort(Protocol):
     #: The §20.2 restart tests assert persistence only against a durable
     #: engine; they skip, loudly, against the in-memory stub.
     DURABLE: bool
+    #: Only A's canonical Mongo engine may opt into semantic-memory jobs.
+    CANONICAL_EVENTS: bool
 
     def create_campaign(self, player_name: str, seed: int | None) -> CampaignSummary: ...
 
@@ -247,6 +249,8 @@ class HarnessPort(Protocol):
     def template_narration(
         self, view: WorldView, resolution: EngineResolution, kind: str
     ) -> str: ...
+
+    def after_commit(self, view: WorldView, event_ids: list[str]) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +384,7 @@ class StubEngine:
 
     # In-memory: state dies with the process. A's engine sets this True.
     DURABLE = False
+    CANONICAL_EVENTS = False
 
     def __init__(self) -> None:
         self._campaigns: dict[str, _Campaign] = {}
@@ -909,6 +914,9 @@ class StubHarness:
         else:
             parts.append("There is no way out but the way you came.")
         return " ".join(parts)
+
+    def after_commit(self, view: WorldView, event_ids: list[str]) -> None:
+        """Stub and file-backed demo worlds intentionally have no memory collection."""
 
 
 # ---------------------------------------------------------------------------
