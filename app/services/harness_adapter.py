@@ -25,7 +25,27 @@ from app.harness.context_policy import seed_context_policy, select_action_class
 from app.harness.memory_retriever import retrieve
 from app.harness.model_client import ModelClient
 from app.harness.narrator import fallback_narration, narrate as domain_narrate
+from app.domain.types import Event
 from app.services.stubs import EngineResolution, NarrationResult, Proposal, WorldView
+
+
+def _domain_events(events: list[dict[str, Any]] | None) -> list[Event] | None:
+    """Map committed event documents onto domain Events (§10.6).
+
+    The seam carries plain documents so that `app/services/stubs.py` stays free
+    of domain imports. A document the current Event model cannot accept is
+    skipped rather than raised: narration runs *after* commit, so a shape
+    mismatch must never turn a committed turn into an error (§7.1.7).
+    """
+    if not events:
+        return None
+    mapped: list[Event] = []
+    for document in events:
+        try:
+            mapped.append(Event(**document))
+        except Exception:  # noqa: BLE001 - post-commit: degrade, never fail
+            continue
+    return mapped or None
 
 
 class _WorldViewContext(ContextView):
@@ -285,9 +305,15 @@ class ProductionHarness:
             [_model_call(result.model_call)],
         )
 
-    def narrate(self, view: WorldView, resolution: EngineResolution, kind: str) -> NarrationResult:
+    def narrate(
+        self,
+        view: WorldView,
+        resolution: EngineResolution,
+        kind: str,
+        events: list[dict[str, Any]] | None = None,
+    ) -> NarrationResult:
         result, call = domain_narrate(
-            events=None,
+            events=_domain_events(events),
             rejection_reason=resolution.reason if not resolution.accepted else None,
             snapshot=_snapshot(view),
             player_summary=_player_summary(view),
@@ -303,8 +329,12 @@ class ProductionHarness:
         )
 
     def template_narration(
-        self, view: WorldView, resolution: EngineResolution, kind: str
+        self,
+        view: WorldView,
+        resolution: EngineResolution,
+        kind: str,
+        events: list[dict[str, Any]] | None = None,
     ) -> str:
         if not resolution.accepted and resolution.reason:
             return resolution.reason
-        return fallback_narration([], _snapshot(view)).prose
+        return fallback_narration(_domain_events(events) or [], _snapshot(view)).prose

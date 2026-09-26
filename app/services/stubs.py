@@ -127,6 +127,12 @@ class CommitResult:
 
     turn_sequence: int
     event_ids: list[str] = field(default_factory=list)
+    #: The event documents as persisted, shaped to `app.domain.types.Event`.
+    #: §10.6 gives the narrator the *committed events*, not just their types,
+    #: so it can name what actually happened rather than infer it from the
+    #: post-commit snapshot. Engines that cannot supply them may leave this
+    #: empty; the narrator then falls back to the snapshot alone.
+    events: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -274,11 +280,19 @@ class HarnessPort(Protocol):
     ) -> tuple[Proposal | None, list[ModelCall]]: ...
 
     def narrate(
-        self, view: WorldView, resolution: EngineResolution, kind: str
+        self,
+        view: WorldView,
+        resolution: EngineResolution,
+        kind: str,
+        events: list[dict[str, Any]] | None = None,
     ) -> NarrationResult: ...
 
     def template_narration(
-        self, view: WorldView, resolution: EngineResolution, kind: str
+        self,
+        view: WorldView,
+        resolution: EngineResolution,
+        kind: str,
+        events: list[dict[str, Any]] | None = None,
     ) -> str: ...
 
 
@@ -798,13 +812,21 @@ class StubEngine:
                     "type": event_type,
                     "actor_id": camp.player_id,
                     "cell_id": camp.player_cell,
+                    "entity_ids": [camp.player_id],
+                    "payload": {},
                     "summary": resolution.outcome_summary,
-                    "created_at": _now(),
+                    "memory_status": "NOT_REQUIRED",
+                    "schema_version": 1,
                 }
             )
+        committed = camp.events[-len(event_ids):] if event_ids else []
         camp.current_turn = seq
         camp.updated_at = _now()
-        return CommitResult(turn_sequence=seq, event_ids=event_ids)
+        return CommitResult(
+            turn_sequence=seq,
+            event_ids=event_ids,
+            events=[dict(e) for e in committed],
+        )
 
     # ---- `turns` collection (§9.7) ----
 
@@ -943,9 +965,13 @@ class StubHarness:
         return proposal, [call]
 
     def narrate(
-        self, view: WorldView, resolution: EngineResolution, kind: str
+        self,
+        view: WorldView,
+        resolution: EngineResolution,
+        kind: str,
+        events: list[dict[str, Any]] | None = None,
     ) -> NarrationResult:
-        prose = self.template_narration(view, resolution, kind)
+        prose = self.template_narration(view, resolution, kind, events)
         call = ModelCall(
             role="NARRATOR",
             model="stub/fake-narrator",
@@ -966,7 +992,11 @@ class StubHarness:
         return NarrationResult(prose=prose, claims=claims, source="MODEL", model_call=call)
 
     def template_narration(
-        self, view: WorldView, resolution: EngineResolution, kind: str
+        self,
+        view: WorldView,
+        resolution: EngineResolution,
+        kind: str,
+        events: list[dict[str, Any]] | None = None,
     ) -> str:
         """Deterministic fallback narration built from committed results (§7.1.7)."""
         cell = view.visible_cell
