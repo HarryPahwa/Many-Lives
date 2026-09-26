@@ -212,4 +212,54 @@ def test_writes_are_atomic_leaving_no_temp_file_behind(state_file):
     client = _client()
     campaign_id = _create(client)
     _turn(client, campaign_id, "north")
-    assert not state_file.with_suffix(".tmp").exists()
+    # Temp names carry a thread id, so glob rather than guess one name.
+    strays = list(state_file.parent.glob(f"{state_file.stem}.*.tmp"))
+    assert strays == [], f"temp files left behind: {strays}"
+
+
+def test_concurrent_turns_on_two_campaigns_do_not_corrupt_the_file(state_file):
+    """Per-campaign locks do not serialise saves; the save lock must."""
+    import concurrent.futures
+
+    client = _client()
+    first = _create(client, seed=9)
+    second = _create(client, seed=42)
+
+    def play(campaign_id: str, n: int) -> None:
+        for _ in range(n):
+            _turn(client, campaign_id, "look")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(play, first, 6), pool.submit(play, second, 6)]
+        for future in futures:
+            future.result()
+
+    # The world file must still be readable and hold both campaigns.
+    payload = json.loads(state_file.read_text(encoding="utf-8"))
+    ids = {c["campaign_id"] for c in payload["campaigns"]}
+    assert {first, second} <= ids
+    assert list(state_file.parent.glob(f"{state_file.stem}.*.tmp")) == []
+
+
+def test_a_state_file_from_an_older_layout_does_not_crash_the_server(state_file):
+    """Schema drift must quarantine, not kill the process mid-demo.
+
+    A file whose documents carry fields the dataclasses no longer accept used
+    to raise TypeError out of _load and take the server down on startup.
+    """
+    client = _client()
+    _create(client)
+
+    payload = json.loads(state_file.read_text(encoding="utf-8"))
+    # The fragile paths are the ones splatted into dataclasses: a field the
+    # current layout does not know raises TypeError there.
+    campaign = payload["campaigns"][0]
+    turn = next(iter(campaign["turns"].values()))
+    turn["a_field_from_the_future"] = True
+    state_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    client = _restart()
+
+    assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/api/campaigns").json() == []
+    assert state_file.with_suffix(".corrupt").exists()

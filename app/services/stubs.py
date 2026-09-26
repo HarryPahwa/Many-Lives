@@ -163,6 +163,9 @@ class TurnRecord:
     status: str
     path: str = "FAST"
     action_class: str | None = None
+    #: Machine-readable rejection code (§7.1.3), e.g. ADJUDICATION_FAILED.
+    #: The player-facing wording lives in the narration, not here.
+    reason_code: str | None = None
     input: str | None = None
     turn_sequence: int = 0
     proposal: dict[str, Any] | None = None
@@ -942,6 +945,10 @@ class FileBackedEngine(StubEngine):
     def __init__(self, path: str) -> None:
         super().__init__()
         self._path = Path(path)
+        # The orchestrator's locks are per campaign, so two campaigns can be
+        # in flight at once and both reach _save(). Without this, they would
+        # race on one shared temp path and interleave the whole world file.
+        self._save_lock = threading.Lock()
         self._load()
 
     # ---- persistence ----
@@ -950,16 +957,22 @@ class FileBackedEngine(StubEngine):
         if not self._path.exists():
             return
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            # A corrupt file must not take the server down mid-demo. Keep the
-            # damaged file for inspection and start empty.
-            logger.error("could not read %s (%s); starting empty", self._path, exc)
+            self._load_unsafe()
+        except Exception as exc:  # noqa: BLE001
+            # Anything at all — unreadable file, malformed JSON, or a document
+            # written by an older field layout (which raises TypeError from the
+            # dataclass constructors below). None of it may take the server down
+            # mid-demo: quarantine the file and start empty.
+            logger.error("could not load %s (%s); starting empty", self._path, exc)
+            self._campaigns.clear()
+            self._counter = 0
             try:
-                self._path.rename(self._path.with_suffix(".corrupt"))
-            except OSError:
+                self._path.replace(self._path.with_suffix(".corrupt"))
+            except OSError:  # pragma: no cover - best effort
                 pass
-            return
+
+    def _load_unsafe(self) -> None:
+        raw = json.loads(self._path.read_text(encoding="utf-8"))
 
         self._counter = raw.get("counter", 0)
         for doc in raw.get("campaigns", []):
@@ -1009,6 +1022,10 @@ class FileBackedEngine(StubEngine):
         logger.info("loaded %d campaign(s) from %s", len(self._campaigns), self._path)
 
     def _save(self) -> None:
+        with self._save_lock:
+            self._save_locked()
+
+    def _save_locked(self) -> None:
         payload = {
             "counter": self._counter,
             "campaigns": [
@@ -1041,17 +1058,24 @@ class FileBackedEngine(StubEngine):
                     "cells": {k: asdict(c) for k, c in camp.cells.items()},
                     "turns": {k: asdict(r) for k, r in camp.turns.items()},
                 }
-                for camp in self._campaigns.values()
+                for camp in list(self._campaigns.values())
             ],
         }
         # Write to a temporary file and replace, so a crash mid-write cannot
-        # leave a half-written world behind.
+        # leave a half-written world behind. The temp name carries the thread
+        # id as well, so a stray concurrent writer can never share it.
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps(payload, default=_encode, indent=1), encoding="utf-8"
-        )
-        tmp.replace(self._path)
+        tmp = self._path.with_suffix(f".{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(
+                json.dumps(payload, default=_encode, indent=1), encoding="utf-8"
+            )
+            tmp.replace(self._path)
+        finally:
+            # replace() consumes the temp file; this only matters if the write
+            # itself raised part-way through.
+            if tmp.exists():  # pragma: no cover - failure path
+                tmp.unlink(missing_ok=True)
 
     # ---- write-through overrides ----
 

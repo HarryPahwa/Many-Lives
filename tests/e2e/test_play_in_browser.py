@@ -293,3 +293,28 @@ def test_the_page_survives_a_server_restart(page, live_server):
 
     assert page.text_content("#meta-id").strip() == campaign_id
     assert page.locator("#minimap .tile-known").count() >= 2
+
+
+def test_the_inspector_works_immediately_after_a_resume(page, live_server):
+    """§29.2 — the demo opens the inspector right after resuming.
+
+    Regression: `debug_available` reached the client only through a TurnResult,
+    so after a reload the inspector stayed inert until another turn was taken.
+    """
+    _new_campaign(page, live_server)
+    _act(page, "look")
+
+    page.reload()
+    page.wait_for_function(
+        "() => document.getElementById('meta-id').textContent.startsWith('cmp_')",
+        timeout=15000,
+    )
+
+    page.locator("#inspector-details summary").click()
+    page.wait_for_function(
+        "() => document.getElementById('inspector').textContent.includes('status')",
+        timeout=10000,
+    )
+    inspector = page.text_content("#inspector")
+    assert "No turn inspected yet" not in inspector
+    assert "policy" in inspector, "the resume manifest should be inspectable"

@@ -474,3 +474,34 @@ def test_html_in_narration_is_returned_verbatim_not_executed(client: TestClient)
     result = _turn(client, campaign_id, "wait").json()
     # JSON carries it inertly; app.js puts it on the page with textContent.
     assert result["narration"] == payload
+
+
+def test_adjudication_failure_records_a_machine_readable_reason_code(client: TestClient):
+    """§7.1.3 — REJECTED with reason ADJUDICATION_FAILED.
+
+    The player sees prose; the inspector must see the code.
+    """
+    from app.services import stubs
+
+    class NoProposal(stubs.StubHarness):
+        def adjudicate(self, text, view, action_class):
+            return None, []
+
+    stubs.set_harness(NoProposal())
+    campaign_id = _create(client)
+    turn_id = str(uuid.uuid4())
+
+    result = _turn(client, campaign_id, "something the adjudicator cannot parse",
+                   turn_id=turn_id).json()
+    assert result["accepted"] is False
+    assert result["narration"], "a failed adjudication is still narrated"
+
+    debug = client.get(
+        f"/api/campaigns/{campaign_id}/debug/context", params={"turn_id": turn_id}
+    ).json()
+    assert debug["reason_code"] == "ADJUDICATION_FAILED"
+    assert debug["status"] == "REJECTED"
+    # And nothing was applied.
+    assert client.get(f"/api/campaigns/{campaign_id}").json()["current_turn"] == (
+        result["turn_sequence"]
+    )

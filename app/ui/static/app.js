@@ -392,6 +392,9 @@ async function resumeCampaign(campaignId) {
     });
     state.campaignId = id;
     state.playerId = resumed.campaign.player_id;
+    state.debugAvailable = Boolean(resumed.debug_available);
+    state.lastTurnId = null; // the resume record is the latest turn
+    $("inspector-panel").hidden = !state.debugAvailable;
     rememberCampaign(id);
     clearLog();
     logLine(`Resumed ${id} from stored state — no transcript was replayed.`, "system");

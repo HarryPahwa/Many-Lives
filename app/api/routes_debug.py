@@ -66,6 +66,7 @@ def _to_debug_context(record: TurnRecord) -> DebugContext:
         status=record.status,
         path=record.path,
         action_class=record.action_class,
+        reason_code=record.reason_code,
         input=record.input,
         context_manifest=(
             ContextManifest.model_validate(record.context_manifest)
