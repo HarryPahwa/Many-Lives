@@ -368,6 +368,8 @@ async function refreshCampaigns(selectId) {
 
 async function createCampaign() {
   const name = $("new-name").value.trim() || "Ada";
+  if (speech.enabled) unlockAudio();
+  cancelSpeech();
   setBusy(true);
   try {
     const created = await api("POST", "/api/campaigns", {
@@ -389,12 +391,14 @@ async function createCampaign() {
   }
 }
 
-async function resumeCampaign(campaignId) {
+async function resumeCampaign(campaignId, fromGesture = true) {
   const id = campaignId || $("campaign-select").value;
   if (!id) {
     toast("Pick a campaign first.");
     return;
   }
+  if (fromGesture && speech.enabled) unlockAudio();
+  cancelSpeech();
   setBusy(true);
   try {
     const resumed = await api("POST", `/api/campaigns/${id}/resume`, {
@@ -411,6 +415,7 @@ async function resumeCampaign(campaignId) {
     clearLog();
     logLine(`Resumed ${id} from stored state — no transcript was replayed.`, "system");
     logLine(resumed.narration, "narration");
+    speak(resumed.narration, fromGesture);
     renderRoom(resumed.visible_cell);
     renderMeta(resumed.campaign);
     window.dispatchEvent(new CustomEvent("campaign-refreshed"));
@@ -438,6 +443,7 @@ function applyTurnResult(result) {
   state.lastTurnId = result.turn_id;
   $("inspector-panel").hidden = !state.debugAvailable;
   logLine(result.narration, result.accepted ? "narration" : "rejected");
+  speak(result.narration, true);
   if (result.narration_source === "TEMPLATE") {
     logLine("(narration fell back to template text)", "system");
   }
@@ -466,6 +472,8 @@ async function submitTurn(text) {
   state.pendingInput = text;
 
   logLine(`> ${text}`, "player");
+  if (speech.enabled) unlockAudio();
+  cancelSpeech();
   setBusy(true);
   try {
     const result = await api(
@@ -747,6 +755,15 @@ function renderVisual(status) {
   button.textContent = status.status === "NONE" ? "Generate visual" : "Update visual";
 }
 
+function shouldAutoRender(status) {
+  // A room with no picture yet, or one whose picture no longer matches the
+  // world. FAILED is deliberately excluded: a provider that keeps failing
+  // would otherwise be retried on every turn, and every attempt costs money.
+  // The button stays available for a manual retry.
+  if (status.status === "NONE") return true;
+  return status.status === "READY" && status.dirty === true;
+}
+
 function scheduleVisualPoll(cellId, token) {
   if (token !== state.visualToken) return;
   if (state.visualPolls >= VISUAL_POLL_LIMIT) return;
@@ -778,9 +795,10 @@ async function refreshVisual(cellId, token) {
 
     if (status.status === "GENERATING") {
       scheduleVisualPoll(cellId, token);
-    } else if (status.auto_update && status.dirty) {
-      // Once per signature change, not once per poll.
-      const key = `${cellId}:${status.revision}`;
+    } else if (status.auto_update && shouldAutoRender(status)) {
+      // Keyed on the exact situation, so each new room and each change
+      // triggers exactly one render rather than one per poll.
+      const key = `${cellId}:${status.status}:${status.revision}`;
       if (state.visualAutoRequested !== key) {
         state.visualAutoRequested = key;
         requestVisual(cellId);
@@ -826,6 +844,148 @@ async function requestVisual(cellId) {
 // ---------------------------------------------------------------------------
 
 const LAST_CAMPAIGN_KEY = "many-lives:last-campaign";
+const SPEECH_KEY = "many-lives:speak";
+
+// Narration audio. The page sends text to /api/speech; the ElevenLabs key
+// stays on the server. Playback uses an AudioContext unlocked during the
+// click that started the turn, so the clip can start after the request returns.
+const speech = {
+  enabled: false,
+  context: null,
+  source: null,
+  lastText: "",
+  requestId: 0,
+  abort: null,
+};
+
+function speechPreference(enabled) {
+  try {
+    window.localStorage.setItem(SPEECH_KEY, enabled ? "on" : "off");
+  } catch {
+    // A blocked store must not stop playback for this page load.
+  }
+}
+
+function loadSpeechPreference() {
+  try {
+    // Only an explicit "on" enables speech. A missing key stays off, so a
+    // fresh page never calls ElevenLabs.
+    speech.enabled = window.localStorage.getItem(SPEECH_KEY) === "on";
+  } catch {
+    speech.enabled = false;
+  }
+  const toggle = $("speech-toggle");
+  if (toggle) toggle.checked = speech.enabled;
+}
+
+function setSpeechStatus(text) {
+  const status = $("speech-status");
+  if (status) status.textContent = text;
+}
+
+function unlockAudio() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  if (!speech.context) speech.context = new Ctx();
+  if (speech.context.state === "suspended") speech.context.resume();
+  return speech.context;
+}
+
+function haltPlayback() {
+  if (!speech.source) return;
+  try {
+    speech.source.stop();
+  } catch {
+    // The source already ended.
+  }
+  speech.source = null;
+}
+
+function cancelSpeech() {
+  speech.requestId += 1;
+  if (speech.abort) {
+    speech.abort.abort();
+    speech.abort = null;
+  }
+  haltPlayback();
+  setSpeechStatus("");
+}
+
+async function speak(text, fromGesture) {
+  const clean = (text || "").trim();
+  if (!clean) return;
+  speech.lastText = clean;
+  const replay = $("speech-replay");
+  if (replay) replay.disabled = false;
+  if (!speech.enabled) return;
+
+  const ctx = speech.context;
+  if (!fromGesture && (!ctx || ctx.state !== "running")) {
+    setSpeechStatus("Press Replay to hear this.");
+    return;
+  }
+  if (!ctx) {
+    setSpeechStatus("This browser cannot play audio.");
+    return;
+  }
+
+  if (!speech.enabled) return;
+  const requestId = ++speech.requestId;
+  haltPlayback();
+  const abort = new AbortController();
+  speech.abort = abort;
+  setSpeechStatus("Speaking…");
+  try {
+    const response = await fetch("/api/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "audio/mpeg" },
+      body: JSON.stringify({ text: clean }),
+      signal: abort.signal,
+    });
+    if (requestId !== speech.requestId) return;
+    if (!response.ok) {
+      setSpeechStatus("");
+      let message = "Could not speak that narration.";
+      try {
+        const payload = await response.json();
+        if (payload && payload.error && payload.error.message) {
+          message = payload.error.message;
+        }
+      } catch {
+        // The body was not the error envelope.
+      }
+      if (response.status === 503) {
+        // Not configured. Stop asking this session; a reload tries again.
+        speech.enabled = false;
+        const toggle = $("speech-toggle");
+        if (toggle) toggle.checked = false;
+      }
+      toast(message);
+      return;
+    }
+    const bytes = await response.arrayBuffer();
+    if (requestId !== speech.requestId || !speech.enabled) return;
+    if (ctx.state === "suspended") await ctx.resume();
+    const buffer = await ctx.decodeAudioData(bytes.slice(0));
+    if (requestId !== speech.requestId || !speech.enabled) return;
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    source.onended = () => {
+      if (speech.source === source) {
+        speech.source = null;
+        setSpeechStatus("");
+      }
+    };
+    speech.source = source;
+    source.start();
+  } catch (error) {
+    if (requestId !== speech.requestId || error.name === "AbortError") return;
+    haltPlayback();
+    setSpeechStatus("Press Replay to hear this.");
+    toast(`Could not speak that narration: ${error.message}`);
+  }
+}
 
 function rememberCampaign(campaignId) {
   try {
@@ -857,10 +1017,24 @@ async function reconnect() {
     return;
   }
   logLine("Reconnecting to the last campaign…", "system");
-  await resumeCampaign(remembered);
+  await resumeCampaign(remembered, false);
 }
 
 function init() {
+  loadSpeechPreference();
+  $("speech-toggle").addEventListener("change", (event) => {
+    speech.enabled = event.target.checked;
+    speechPreference(speech.enabled);
+    if (!speech.enabled) cancelSpeech();
+  });
+  $("speech-replay").addEventListener("click", () => {
+    if (!speech.lastText) return;
+    speech.enabled = true;
+    $("speech-toggle").checked = true;
+    speechPreference(true);
+    unlockAudio();
+    speak(speech.lastText, true);
+  });
   $("create-btn").addEventListener("click", createCampaign);
   $("resume-btn").addEventListener("click", () => resumeCampaign());
   $("campaign-select").addEventListener("change", (event) => {

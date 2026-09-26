@@ -81,8 +81,10 @@ def live_server(tmp_path_factory) -> str:
         "DEBUG_ENDPOINTS": "true",
         "USE_FAKE_MODELS": "true",
         "PYTHONIOENCODING": "utf-8",
-        # Never let a developer's real cluster be reached from a browser test.
+        # Never let a developer's real cluster or speech account be reached
+        # from a browser test. pydantic-settings prefers these over .env.
         "MONGODB_URI": "",
+        "ELEVENLABS_API_KEY": "",
     }
     # Log to a FILE, never to a pipe. uvicorn logs every request, and an
     # undrained subprocess pipe fills its OS buffer (~64 KB) and then blocks

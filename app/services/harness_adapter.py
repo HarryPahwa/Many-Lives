@@ -32,6 +32,13 @@ from app.services.stubs import EngineResolution, NarrationResult, Proposal, Worl
 _logger = logging.getLogger("many_lives.harness")
 
 
+def _event_from_document(document: Mapping[str, Any]) -> Event:
+    """Validate the domain fields of a MongoDB event document."""
+    return Event.model_validate(
+        {field: document[field] for field in Event.model_fields if field in document}
+    )
+
+
 def _domain_events(events: list[dict[str, Any]] | None) -> list[Event] | None:
     """Map committed event documents onto domain Events (§10.6).
 
@@ -45,7 +52,7 @@ def _domain_events(events: list[dict[str, Any]] | None) -> list[Event] | None:
     mapped: list[Event] = []
     for document in events:
         try:
-            mapped.append(Event(**document))
+            mapped.append(_event_from_document(document))
         except Exception as exc:  # noqa: BLE001 - post-commit: degrade, never fail
             _logger.warning(
                 "dropping event %s from narrator context: %s",
@@ -137,12 +144,10 @@ class _WorldViewContext(ContextView):
     ) -> Sequence[Any]:
         if self.db is None or not limit:
             return []
-        from app.domain.types import Event
-
         documents = self.db.events.find({"campaign_id": campaign_id}).sort(
             [("turn_sequence", -1), ("event_index", -1)]
         ).limit(limit)
-        return [Event.model_validate(document) for document in reversed(list(documents))]
+        return [_event_from_document(document) for document in reversed(list(documents))]
 
 
 def _wire_manifest(manifest) -> WireContextManifest:

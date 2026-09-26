@@ -1,7 +1,13 @@
+from datetime import UTC, datetime
+
+import mongomock
+
 from app.domain.types import (
     ActionProposal,
     Claim,
     ClaimAttribute,
+    Event,
+    EventType,
     NarrationResult as DomainNarrationResult,
     Role,
 )
@@ -67,3 +73,32 @@ def test_production_harness_marks_unavailable_vector_search_without_a_database()
 
     assert "VECTOR_UNAVAILABLE" in manifest.notes
     assert vector_search_ms is None
+
+
+def test_production_harness_uses_mongo_events_without_persistence_metadata():
+    view = _view()
+    database = mongomock.MongoClient().dungeon_test
+    event = Event(
+        campaign_id=view.campaign_id,
+        event_id="evt_1_0",
+        turn_sequence=1,
+        event_index=0,
+        turn_id="turn-0001",
+        type=EventType.PLAYER_MOVED,
+        actor_id=view.player_id,
+        entity_ids=[view.player_id],
+        cell_id=view.visible_cell.cell_id,
+        payload={},
+        summary="Ada moved north.",
+    )
+    document = event.model_dump(mode="json")
+    document.update(
+        {"_id": f"{view.campaign_id}:{event.event_id}", "created_at": datetime.now(UTC)}
+    )
+    database.events.insert_one(document)
+    harness = ProductionHarness(client=_client(), db=database)
+
+    context, manifest, _ = harness.build_context(view, "RESUME", None)
+
+    assert manifest.event_ids == [event.event_id]
+    assert event.event_id in context

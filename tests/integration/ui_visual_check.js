@@ -110,7 +110,7 @@ const load = new Function(
   "crypto",
   "fetch",
   "CustomEvent",
-  `${source}\nreturn { renderVisual, hideVisualPanel, state };`
+  `${source}\nreturn { renderVisual, hideVisualPanel, shouldAutoRender, state };`
 );
 const ui = load(
   document,
@@ -252,5 +252,45 @@ assert.strictEqual(badge.children.length, 0, "badge holds text, not nodes");
 for (const sink of ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"]) {
   assert.ok(!source.includes(sink), `app.js must not use ${sink}`);
 }
+
+// --- automatic rendering ----------------------------------------------------
+//
+// With visuals on, a picture should appear by itself: entering a new room
+// generates one, and a change the picture can show updates it. A failing
+// provider must NOT be retried automatically, or every turn costs money.
+
+const base = {
+  cell_id: "cell_1_2",
+  revision: 0,
+  image_url: null,
+  auto_update: true,
+  error_code: null,
+};
+
+assert.strictEqual(
+  ui.shouldAutoRender({ ...base, status: "NONE", dirty: false }),
+  true,
+  "a room with no picture must render by itself"
+);
+assert.strictEqual(
+  ui.shouldAutoRender({ ...base, status: "READY", dirty: true, revision: 2 }),
+  true,
+  "a picture that no longer matches the world must update by itself"
+);
+assert.strictEqual(
+  ui.shouldAutoRender({ ...base, status: "READY", dirty: false, revision: 2 }),
+  false,
+  "an accurate picture must never be re-rendered"
+);
+assert.strictEqual(
+  ui.shouldAutoRender({ ...base, status: "GENERATING", dirty: false }),
+  false,
+  "no second request while one is already running"
+);
+assert.strictEqual(
+  ui.shouldAutoRender({ ...base, status: "FAILED", dirty: false, error_code: "HTTP_5XX" }),
+  false,
+  "a failing provider must not be retried automatically: that bills on every turn"
+);
 
 console.log("ui_visual_check: all assertions passed");

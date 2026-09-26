@@ -19,6 +19,7 @@ from app.api import (
     routes_campaigns,
     routes_debug,
     routes_evals,
+    routes_speech,
     routes_turns,
     routes_visuals,
 )
@@ -35,6 +36,7 @@ _CODES = {
     404: "NOT_FOUND",
     409: "CONFLICT",
     422: "UNPROCESSABLE_ENTITY",
+    502: "BAD_GATEWAY",
     503: "SERVICE_UNAVAILABLE",
 }
 
@@ -96,6 +98,7 @@ async def _unexpected(_: Request, exc: Exception) -> JSONResponse:
 
 app.include_router(routes_campaigns.router)
 app.include_router(routes_turns.router)
+app.include_router(routes_speech.router)
 app.include_router(routes_debug.router)
 app.include_router(routes_evals.router)
 # Optional feature; the flag is checked per request, not at import.

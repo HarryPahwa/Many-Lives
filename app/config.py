@@ -30,7 +30,10 @@ class Settings(BaseSettings):
     # Room visuals (optional feature; see docs/Room_Visuals_TDD.md).
     # Every one of these is inert while enable_room_visuals is false.
     enable_room_visuals: bool = False
-    auto_update_room_visuals: bool = False
+    # When visuals are on, they render by themselves: entering a new room
+    # generates one, and a change that the picture can show updates it. Set
+    # false to require a button press instead (each render costs money).
+    auto_update_room_visuals: bool = True
     image_client: str = "auto"  # auto | fake | openrouter
     image_model: str = "openai/gpt-image-1-mini"
     image_aspect_ratio: str = "3:2"  # 16:9 is rejected by the default model
@@ -47,6 +50,12 @@ class Settings(BaseSettings):
     use_fake_models: bool = True
     debug_endpoints: bool = False
     balance_file: str = "config/balance.yaml"
+
+    # Speech. Empty key means narration stays text-only.
+    elevenlabs_api_key: str = ""
+    # George, a premade narrative voice. Override with any voice id.
+    elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
+    elevenlabs_model_id: str = "eleven_flash_v2_5"
 
 
 @lru_cache

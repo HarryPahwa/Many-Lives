@@ -131,6 +131,38 @@ section {
   color: var(--muted);
 }
 
+/* ---- speech ---- */
+
+.speech-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.speech-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.speech-toggle input {
+  accent-color: var(--accent);
+}
+
+#speech-replay {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.speech-status {
+  color: var(--accent);
+}
+
 /* ---- narrative ---- */
 
 /* The sidebar (inspector especially) runs long. Keeping the chat column in
