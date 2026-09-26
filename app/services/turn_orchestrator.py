@@ -143,12 +143,14 @@ class TurnOrchestrator:
             record.path = "FAST"
         else:
             record.path = "ADJUDICATED"
-            action_class = harness.classify(request.input)
+            action_class = harness.classify(request.input, view)
             record.action_class = action_class
-            _, manifest = harness.build_context(view, action_class)
+            context_text, manifest, record.vector_search_ms = harness.build_context(
+                view, action_class, request.input
+            )
             record.context_manifest = manifest.model_dump()
 
-            proposal, calls = harness.adjudicate(request.input, view, action_class)
+            proposal, calls = harness.adjudicate(request.input, context_text, view, action_class)
             record.model_calls.extend(c.model_dump() for c in calls)
             if proposal is None:
                 # §7.1.3 / §21: invalid structured output after retries.
@@ -244,7 +246,7 @@ class TurnOrchestrator:
             summary = self._require_campaign(campaign_id)
             view = engine.load_world_view(campaign_id, player_id)
 
-            _, manifest = harness.build_context(view, "RESUME")
+            _, manifest, _ = harness.build_context(view, "RESUME", None)
             record = TurnRecord(
                 campaign_id=campaign_id,
                 turn_id=f"resume-{_now()}-{view.current_turn}",

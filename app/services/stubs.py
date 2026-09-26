@@ -263,14 +263,14 @@ def supports_history(engine: object) -> bool:
 class HarnessPort(Protocol):
     """Developer B's seam (§27.1)."""
 
-    def classify(self, text: str) -> str: ...
+    def classify(self, text: str, view: WorldView) -> str: ...
 
     def build_context(
-        self, view: WorldView, action_class: str
-    ) -> tuple[str, ContextManifest]: ...
+        self, view: WorldView, action_class: str, action_text: str | None
+    ) -> tuple[str, ContextManifest, int | None]: ...
 
     def adjudicate(
-        self, text: str, view: WorldView, action_class: str
+        self, text: str, context_text: str, view: WorldView, action_class: str
     ) -> tuple[Proposal | None, list[ModelCall]]: ...
 
     def narrate(
@@ -872,7 +872,7 @@ class StubHarness:
 
     POLICY_VERSION = 1
 
-    def classify(self, text: str) -> str:
+    def classify(self, text: str, view: WorldView) -> str:
         low = text.lower()
         if any(w in low for w in ("say", "ask", "tell", "persuade", "talk", "mara")):
             return "SOCIAL"
@@ -883,8 +883,8 @@ class StubHarness:
         return "EXPLORATION"
 
     def build_context(
-        self, view: WorldView, action_class: str
-    ) -> tuple[str, ContextManifest]:
+        self, view: WorldView, action_class: str, action_text: str | None
+    ) -> tuple[str, ContextManifest, int | None]:
         components = ["player_state", "current_cell", "recent_events"]
         if action_class == "SOCIAL":
             components += ["npc_disposition", "semantic_memory"]
@@ -911,10 +911,10 @@ class StubHarness:
             notes=["STUB(B): canned context; no retrieval performed."],
         )
         text = f"[STUB CONTEXT class={action_class} cell={view.visible_cell.cell_id}]"
-        return text, manifest
+        return text, manifest, None
 
     def adjudicate(
-        self, text: str, view: WorldView, action_class: str
+        self, text: str, context_text: str, view: WorldView, action_class: str
     ) -> tuple[Proposal | None, list[ModelCall]]:
         """Free-text path. The stub proposes only LOOK — never a state change.
 
@@ -1207,7 +1207,27 @@ def _build_engine() -> EnginePort:
 
 
 _ENGINE: EnginePort = _build_engine()
-_HARNESS: HarnessPort = StubHarness()
+
+
+def _build_harness() -> HarnessPort:
+    """Choose B's adapter only when a real model configuration is active."""
+    from app.config import get_settings
+
+    if get_settings().use_fake_models:
+        return StubHarness()
+
+    from app.harness.model_client import get_model_client
+    from app.services.harness_adapter import ProductionHarness
+
+    settings = get_settings()
+    if settings.mongodb_uri:
+        from app.persistence.mongo import get_database
+
+        return ProductionHarness(client=get_model_client(), db=get_database())
+    return ProductionHarness(client=get_model_client())
+
+
+_HARNESS: HarnessPort = _build_harness()
 
 
 def get_engine() -> EnginePort:
@@ -1224,8 +1244,8 @@ def get_engine() -> EnginePort:
 def get_harness() -> HarnessPort:
     """Return the active harness (Developer B's seam).
 
-    B: when `harness/adjudicator.py` and `harness/narrator.py` are ready,
-    construct the real adapter here (gated on `settings.use_fake_models`).
+    The real adapter is selected when ``USE_FAKE_MODELS=false``. Tests and
+    credential-free development retain the deterministic stub.
     """
     return _HARNESS
 
@@ -1258,4 +1278,4 @@ def reset_stubs() -> None:
             except OSError:  # pragma: no cover - best effort
                 pass
     set_engine(_build_engine())
-    set_harness(StubHarness())
+    set_harness(_build_harness())
