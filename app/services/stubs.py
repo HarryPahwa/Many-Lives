@@ -116,6 +116,9 @@ class EngineResolution:
     outcome_summary: str = ""
     rolls: list[Roll] = field(default_factory=list)
     rejected_effects: list[dict[str, Any]] = field(default_factory=list)
+    # Private adapter state. The Mongo engine resolves against an immutable
+    # persistence snapshot, then binds the client turn_id when it commits.
+    pending: Any = field(default=None, repr=False)
 
 
 @dataclass
@@ -1227,6 +1230,12 @@ def _build_engine() -> EnginePort:
       2. FileBackedEngine when STUB_STATE_FILE is set (durable, no Atlas);
       3. the in-memory StubEngine.
     """
+    from app.config import get_settings
+
+    if get_settings().mongodb_uri:
+        from app.services.mongo_engine import MongoEngine
+
+        return MongoEngine.from_environment()
     state_file = os.getenv("STUB_STATE_FILE", "").strip()
     if state_file:
         return FileBackedEngine(state_file)

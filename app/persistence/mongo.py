@@ -12,6 +12,7 @@ from pymongo import MongoClient
 from pymongo.database import Database
 from pymongo.write_concern import WriteConcern
 
+from app.config import get_settings
 
 class MongoConfigurationError(RuntimeError):
     """Raised when required MongoDB environment configuration is absent."""
@@ -23,6 +24,8 @@ _database: Database | None = None
 
 def _required_environment(name: str) -> str:
     value = os.getenv(name, "").strip()
+    if not value:
+        value = str(getattr(get_settings(), name.casefold())).strip()
     if not value:
         raise MongoConfigurationError(f"Required environment variable {name} is not set")
     return value

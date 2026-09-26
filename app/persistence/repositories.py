@@ -56,6 +56,12 @@ class Repository:
         with self._db.client.start_session() as session:
             return session.with_transaction(callback)
 
+    def ensure_indexes(self) -> list[str]:
+        """Create the repository's ordinary indexes before first durable write."""
+        from app.persistence.indexes import create_btree_indexes
+
+        return create_btree_indexes(self._db)
+
     @staticmethod
     def _session(session: Any | None) -> dict[str, Any]:
         return {} if session is None else {"session": session}
@@ -64,6 +70,20 @@ class Repository:
 
     def get_campaign(self, campaign_id: str) -> dict[str, Any] | None:
         return self._db.campaigns.find_one({"_id": campaign_id})
+
+    def list_campaigns(self) -> list[dict[str, Any]]:
+        return list(self._db.campaigns.find().sort("updated_at", -1))
+
+    def get_cells(
+        self, campaign_id: str, cell_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        if not cell_ids:
+            return []
+        return list(
+            self._db.cells.find(
+                {"campaign_id": campaign_id, "cell_id": {"$in": cell_ids}}
+            )
+        )
 
     def get_entity(self, campaign_id: str, entity_id: str) -> dict[str, Any] | None:
         return self._db.entities.find_one(
@@ -264,6 +284,20 @@ class Repository:
             expected_key_count=int(campaign.get("config", {}).get("key_reservations", 6)),
         )
 
+    def update_turn(
+        self, campaign_id: str, turn_id: str, fields: dict[str, Any]
+    ) -> None:
+        result = self._db.turns.update_one(
+            {"campaign_id": campaign_id, "turn_id": turn_id}, {"$set": fields}
+        )
+        if result.matched_count != 1:
+            raise StateNotFoundError(f"Turn not found: {turn_id}")
+
+    def latest_turn(self, campaign_id: str) -> dict[str, Any] | None:
+        return self._db.turns.find_one(
+            {"campaign_id": campaign_id}, sort=[("created_at", -1)]
+        )
+
     def reject_turn(
         self, campaign_id: str, turn_id: str, result: EngineTurnResult
     ) -> EngineTurnResult:
@@ -462,11 +496,13 @@ class Repository:
         player_id: str,
         resolution: Resolution,
         turn_result: EngineTurnResult | None = None,
+        *,
+        store_result: bool = True,
     ) -> EngineTurnResult | None:
         """Commit one turn, using the A4 CAS path for versioned resolutions."""
         if resolution.expected_turn is not None:
             return self._commit_versioned_turn(
-                campaign_id, player_id, resolution, turn_result
+                campaign_id, player_id, resolution, turn_result, store_result
             )
         if not resolution.accepted:
             return
@@ -567,7 +603,8 @@ class Repository:
         player_id: str,
         resolution: Resolution,
         turn_result: EngineTurnResult | None,
-    ) -> EngineTurnResult:
+        store_result: bool,
+    ) -> EngineTurnResult | None:
         if resolution.expected_turn is None:
             raise ValueError("Versioned resolution requires expected_turn")
         if not resolution.accepted:
@@ -578,7 +615,7 @@ class Repository:
             turn_id = turn_result.turn_id
         if not turn_id:
             raise ValueError("Versioned resolution requires a turn_id")
-        if turn_result is None:
+        if turn_result is None and store_result:
             turn_result = EngineTurnResult(
                 turn_id=turn_id,
                 turn_sequence=sequence,
@@ -591,7 +628,9 @@ class Repository:
         if existing and existing.get("status") in {
             "REJECTED", "COMMITTED", "NARRATED", "NARRATION_FAILED"
         }:
-            return EngineTurnResult.model_validate(existing["result"])
+            if existing.get("result") is not None:
+                return EngineTurnResult.model_validate(existing["result"])
+            return None
         if existing is None:
             self.begin_turn(campaign_id, turn_id, player_id, "", path="FAST")
 
@@ -673,20 +712,21 @@ class Repository:
                     documents.append(document)
                 self._db.events.insert_many(documents, **options)
 
-            serialized_result = turn_result.model_dump(mode="json")
+            committed_fields: dict[str, Any] = {
+                "status": "COMMITTED",
+                "turn_sequence": sequence,
+                "event_ids": [event.event_id for event in resolution.events],
+                "accepted_effect_types": [event.type.value for event in resolution.events],
+                "touched_entity_ids": resolution.touched_entity_ids,
+                "touched_cell_ids": resolution.touched_cell_ids,
+                "committed_at": now,
+            }
+            if turn_result is not None:
+                committed_fields["result"] = turn_result.model_dump(mode="json")
             turn_update = self._db.turns.update_one(
                 {"campaign_id": campaign_id, "turn_id": turn_id,
                  "status": "RECEIVED"},
-                {"$set": {
-                    "status": "COMMITTED",
-                    "turn_sequence": sequence,
-                    "event_ids": [event.event_id for event in resolution.events],
-                    "accepted_effect_types": [event.type.value for event in resolution.events],
-                    "touched_entity_ids": resolution.touched_entity_ids,
-                    "touched_cell_ids": resolution.touched_cell_ids,
-                    "result": serialized_result,
-                    "committed_at": now,
-                }},
+                {"$set": committed_fields},
                 **options,
             )
             if turn_update.matched_count != 1:

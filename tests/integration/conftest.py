@@ -38,6 +38,12 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "durable: requires an engine whose state survives a restart"
     )
+    uri = os.getenv("MONGODB_URI", "").strip()
+    if uri and not uri.startswith("<") and "example" not in uri:
+        # The app's MongoEngine reads this setting during module import. Set it
+        # before any test imports the FastAPI app so API tests cannot touch the
+        # demo database configured in a developer's .env.
+        os.environ["MONGODB_DB"] = TEST_DB_NAME
 
 
 @pytest.fixture(scope="session")
