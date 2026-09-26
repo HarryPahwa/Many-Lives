@@ -1,15 +1,159 @@
-# Game balance constants (TDD §4, §11, §13, §14).
-#
-# These are tuning [DEF] values: changing a number here is tuning, not an
-# architecture change. Scaffold — populated as the engine lands.
-#
-# Sections to fill:
-#   stats:          starting stats, level-up increases (§4.4)
-#   experience:     level thresholds, kill XP, death XP (§4.5)
-#   combat:         variance, dodge cap, spell cost/damage (§4.6)
-#   checks:         DCs and stat modifiers per action (§4.7)
-#   inventory:      slots, stack limits, potion amounts, tier bonuses (§4.9)
-#   disposition:    trust thresholds and deltas (§13.9)
-#   world:          grid, keys_required, reservations, edge probability (§4.1, §14)
-#   archetypes:     room archetype weights, carrier split, loot tables (§14.5)
-#   context:        token budget (§11.2)
+# Game balance defaults from TDD v1.1. Values marked [DEF] may be tuned, but
+# changes must be recorded in the commit/PR. Structural [D] rules remain code
+# invariants and must not be overridden through this file.
+
+world:
+  width: 7
+  height: 7
+  keys_required: 3
+  key_reservations: 6
+  min_spawn_boss_distance: 5
+  extra_edge_probability: 0.2
+  boss_placement_attempts: 10
+
+player:
+  max_hp: 20
+  max_mp: 6
+  attack: 5
+  defense: 2
+  speed: 4
+  dodge_pct: 10
+  dodge_pct_cap: 40
+  skill: 3
+  carried_slots: 6
+
+level_up:
+  max_hp: 5
+  max_mp: 2
+  attack: 1
+  defense: 1
+  speed: 1
+  dodge_pct: 2
+  skill: 1
+  threshold_multiplier: 100
+
+experience:
+  kill_xp:
+    difference_lte_minus_3: 5
+    difference_minus_2: 10
+    difference_minus_1: 15
+    difference_0: 25
+    difference_plus_1: 35
+    difference_plus_2: 50
+    difference_gte_plus_3: 70
+    boss: 150
+  death:
+    base_pct: 20
+    exploration_pct_per_cell: 2
+    exploration_pct_cap: 10
+    combat_pct_per_damage: 1
+    combat_pct_cap: 10
+    total_pct_cap: 40
+    minimum_xp: 1
+
+combat:
+  damage_variance: [-1, 0, 1]
+  spell:
+    mp_cost: 3
+    damage: 6
+
+checks:
+  approach_modifier:
+    minimum: -2
+    maximum: 2
+  creative_dc:
+    minimum: 10
+    maximum: 18
+  dc:
+    persuade: 12
+    deceive: 13
+    intimidate_base: 12
+    search_default: 12
+    steal_base: 10
+  disposition_modifier:
+    friendly: 2
+    neutral: 0
+    wary: -2
+    hostile: -5
+
+inventory:
+  max_stack: 3
+  mana_potion_restore: 4
+  equipment_slots: [WEAPON, ARMOR]
+  tier_bonus:
+    1: 1
+    2: 1
+    3: 2
+    4: 2
+    5: 3
+
+disposition:
+  trust_minimum: -100
+  trust_maximum: 100
+  initial_trust: 0
+  hostile_at_or_below: -50
+  hostile_recovers_to_wary_at_or_above: -10
+  friendly_at_or_above: 40
+  friendly_falls_to_neutral_below: 20
+  neutral_falls_to_wary_below: -20
+  wary_recovers_to_neutral_at_or_above: 0
+  hostile_positive_delta_divisor: 2
+  deltas:
+    attacked: -60
+    theft_failed: -40
+    theft_succeeded: -20
+    deception_failed: -20
+    intimidation_succeeded: -15
+    intimidation_failed: -25
+    persuasion_failed: -5
+    persuasion_succeeded: 10
+    item_gift: 15
+    quest_completed: 30
+    adjudicator_worsen: -15
+    adjudicator_improve: 5
+
+features:
+  max_per_cell: 12
+  burning_p2:
+    duration_turns: 3
+    damage_per_turn: 1
+
+generation:
+  archetype_weights:
+    EMPTY: 20
+    ENEMY: 25
+    NPC: 15
+    ITEM: 15
+    ENEMY_WITH_ITEM: 10
+    NPC_WITH_ITEM: 10
+    ENEMY_AND_NPC: 5
+  key_carrier_weights:
+    CONTAINER: 40
+    ENEMY: 35
+    NPC: 25
+  loot_weights:
+    WEAPON: 40
+    ARMOR: 30
+    MANA_POTION: 20
+    TRINKET: 10
+  character_stats:
+    1: {level: 1, hp: 8, attack: 3, defense: 0, speed: 3, dodge_pct: 5, skill: 1}
+    2: {level: 2, hp: 12, attack: 4, defense: 1, speed: 4, dodge_pct: 5, skill: 2}
+    3: {level: 3, hp: 16, attack: 5, defense: 2, speed: 4, dodge_pct: 10, skill: 2}
+    4: {level: 4, hp: 22, attack: 6, defense: 3, speed: 5, dodge_pct: 10, skill: 3}
+    5: {level: 5, hp: 28, attack: 7, defense: 3, speed: 5, dodge_pct: 15, skill: 3}
+    boss: {level: 7, hp: 60, attack: 8, defense: 4, speed: 5, dodge_pct: 10, skill: 4}
+  npc_adjustments:
+    attack: -1
+    dodge_pct: -5
+    minimum: 0
+  spellbook:
+    minimum_tier: 3
+    placement_probability: 0.1
+  hidden_item_concealment_dc_base: 10
+  room_feature_range: [2, 5]
+  dresser_retries: 2
+  generation_claim_timeout_seconds: 60
+
+context:
+  max_context_tokens: 3000

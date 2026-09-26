@@ -17,6 +17,19 @@ DIRECTION_MAP = {
     "w": "WEST",
 }
 
+ITEM_COMMANDS = {
+    "take": ActionType.TAKE_ITEM,
+    "get": ActionType.TAKE_ITEM,
+    "loot": ActionType.TAKE_ITEM,
+    "drop": ActionType.DROP_ITEM,
+    "equip": ActionType.EQUIP,
+    "wield": ActionType.EQUIP,
+    "wear": ActionType.EQUIP,
+    "unequip": ActionType.UNEQUIP,
+    "remove": ActionType.UNEQUIP,
+    "use": ActionType.USE_ITEM,
+    "drink": ActionType.USE_ITEM,
+}
 
 def parse_fast_path(text: str, actor_id: str) -> ActionIntent | None:
     """Attempt to parse text input into a deterministic ActionIntent.
@@ -46,6 +59,27 @@ def parse_fast_path(text: str, actor_id: str) -> ActionIntent | None:
             params={"direction": DIRECTION_MAP[arg]},
         )
 
+    if cmd == "flee" and arg in DIRECTION_MAP:
+        return ActionIntent(
+            action_type=ActionType.FLEE,
+            actor_id=actor_id,
+            params={"direction": DIRECTION_MAP[arg]},
+        )
+
+    if cmd in {"attack", "hit", "strike"} and arg:
+        return ActionIntent(
+            action_type=ActionType.ATTACK,
+            actor_id=actor_id,
+            params={"query": arg},
+        )
+
+    if cmd in {"interact", "open"} and arg:
+        return ActionIntent(
+            action_type=ActionType.INTERACT,
+            actor_id=actor_id,
+            params={"query": arg},
+        )
+
     if cmd == "look":
         return ActionIntent(
             action_type=ActionType.LOOK,
@@ -57,6 +91,22 @@ def parse_fast_path(text: str, actor_id: str) -> ActionIntent | None:
         return ActionIntent(
             action_type=ActionType.WAIT,
             actor_id=actor_id,
+        )
+
+    if clean.startswith("pick up "):
+        arg = clean.removeprefix("pick up ").strip()
+        if arg:
+            return ActionIntent(
+                action_type=ActionType.TAKE_ITEM,
+                actor_id=actor_id,
+                params={"query": arg},
+            )
+
+    if cmd in ITEM_COMMANDS and arg:
+        return ActionIntent(
+            action_type=ITEM_COMMANDS[cmd],
+            actor_id=actor_id,
+            params={"query": arg},
         )
 
     return None
