@@ -276,12 +276,6 @@ class Verification(_Wire):
     absent_entity_mentions: int = 0
 
 
-class EvaluationRequest(_Wire):
-    policy_version: int = Field(ge=1, default=1)
-    probe_ids: list[str] | None = None
-    runs: int = Field(ge=1, le=10, default=3)
-
-
 class DebugContext(_Wire):
     campaign_id: str
     turn_id: str

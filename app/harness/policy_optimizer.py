@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.domain.types import ActionClass, ContextPolicy, PolicyCreator, PolicyStatus
-from app.harness.evaluator import run_suite
 
 
 @dataclass(frozen=True)
@@ -78,32 +77,7 @@ def promote_if_better(baseline: dict[str, object], candidate: dict[str, object])
     )
 
 
-def optimize(*, db, policy: ContextPolicy, probe_ids: list[str] | None, runs: int, runner) -> dict[str, object]:
-    """Run baseline/candidate suites and atomically retain only an improvement."""
+def decision(baseline: dict[str, object], candidate: dict[str, object]) -> str:
+    """Pure B policy decision; A persists it transactionally and C triggers it."""
 
-    baseline = run_suite(
-        policy_version=policy.version, probe_ids=probe_ids, runs=runs, db=db, runner=runner
-    )
-    mutation = propose(policy, dominant_failure(baseline))
-    if mutation is None:
-        return {"decision": "NO_MUTATION", "baseline": baseline["_id"]}
-    candidate_policy = apply(policy, mutation)
-    candidate = run_suite(
-        policy_version=candidate_policy.version,
-        probe_ids=probe_ids,
-        runs=runs,
-        db=db,
-        runner=runner,
-    )
-    promoted = promote_if_better(baseline, candidate)
-    candidate_policy.status = PolicyStatus.ACTIVE if promoted else PolicyStatus.REJECTED
-    db.context_policies.replace_one({"_id": candidate_policy.policy_id}, candidate_policy.model_dump(by_alias=True, mode="json"), upsert=True)
-    if promoted:
-        db.context_policies.update_one({"_id": policy.policy_id}, {"$set": {"status": PolicyStatus.RETIRED.value}})
-        db.campaigns.update_many({"status": "ACTIVE"}, {"$set": {"active_context_policy_version": candidate_policy.version}})
-    return {
-        "decision": "PROMOTED" if promoted else "REJECTED",
-        "baseline": baseline["_id"],
-        "candidate": candidate["_id"],
-        "mutation": mutation.__dict__,
-    }
+    return "PROMOTED" if promote_if_better(baseline, candidate) else "REJECTED"

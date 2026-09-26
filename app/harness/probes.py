@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Protocol
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,21 @@ class ProbeAssessment:
 class Probe:
     id: str
     description: str
+    # TODO(A): supply a repository-backed canonical fixture for each probe.
+    setup: Callable[[], object]
+    # TODO(C): invoke this against the harness/engine integration seam once.
+    call: Callable[[object], dict[str, object]]
     assess: Callable[[dict[str, object]], ProbeAssessment]
+
+
+class ProbeFixtureFactory(Protocol):
+    """A/C integration seam; B never writes canonical fixture state."""
+
+    def build(self, probe_id: str) -> object: ...
+
+
+def _integration_required(*_: object) -> object:
+    raise NotImplementedError("TODO(A/C): canonical probe fixture and turn runner are not wired")
 
 
 def _assessment(output: dict[str, object]) -> ProbeAssessment:
@@ -46,4 +60,7 @@ _P0 = {
     "P12": "wounded enemy state",
     "P14": "campaign-scoped retrieval",
 }
-PROBES = {probe_id: Probe(probe_id, description, _assessment) for probe_id, description in _P0.items()}
+PROBES = {
+    probe_id: Probe(probe_id, description, _integration_required, _integration_required, _assessment)
+    for probe_id, description in _P0.items()
+}
