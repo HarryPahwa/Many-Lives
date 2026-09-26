@@ -264,6 +264,8 @@ class TurnOrchestrator:
             record.narrated_at = _now()
             engine.put_turn(record)
 
+            from app.config import get_settings
+
             return ResumeResult(
                 campaign=summary,
                 player=view.player,
@@ -272,6 +274,7 @@ class TurnOrchestrator:
                 narration=narration,
                 narration_source=source,
                 manifest=manifest,
+                debug_available=get_settings().debug_endpoints,
             )
 
     # ------------------------------------------------------------------
@@ -361,6 +364,7 @@ class TurnOrchestrator:
         """A rejected turn is narrated and recorded, but changes no state."""
         narration, source = self._narrate(view, resolution, "ACTION", record)
         record.status = "REJECTED"
+        record.reason_code = reason_code
         result = self._build_result(
             record.turn_id,
             view.current_turn,

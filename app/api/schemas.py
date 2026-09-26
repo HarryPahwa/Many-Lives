@@ -160,6 +160,9 @@ class ResumeResult(_Wire):
     narration: str
     narration_source: Literal["MODEL", "TEMPLATE"] = "MODEL"
     manifest: "ContextManifest | None" = None
+    # Carried here as well as on TurnResult: the demo opens the inspector
+    # right after resuming (§29.2), before any turn has been taken.
+    debug_available: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -280,6 +283,7 @@ class DebugContext(_Wire):
     status: str
     path: str
     action_class: str | None = None
+    reason_code: str | None = None
     input: str | None = None
     context_manifest: ContextManifest | None = None
     proposal: dict[str, Any] | None = None

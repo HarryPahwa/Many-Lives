@@ -17,10 +17,14 @@ Authority stays with the stub engine, exactly as it will with the real one.
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 import random
 import threading
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Protocol
 
 from app.api.schemas import (
@@ -40,6 +44,8 @@ from app.api.schemas import (
     VisibleFeature,
     VisibleItem,
 )
+
+logger = logging.getLogger("many_lives.stubs")
 
 GRID_W = 7
 GRID_H = 7
@@ -157,6 +163,9 @@ class TurnRecord:
     status: str
     path: str = "FAST"
     action_class: str | None = None
+    #: Machine-readable rejection code (§7.1.3), e.g. ADJUDICATION_FAILED.
+    #: The player-facing wording lives in the narration, not here.
+    reason_code: str | None = None
     input: str | None = None
     turn_sequence: int = 0
     proposal: dict[str, Any] | None = None
@@ -182,6 +191,11 @@ class TurnRecord:
 
 class EnginePort(Protocol):
     """Developer A's seam (§27.1)."""
+
+    #: True when state outlives the process (a real database behind the seam).
+    #: The §20.2 restart tests assert persistence only against a durable
+    #: engine; they skip, loudly, against the in-memory stub.
+    DURABLE: bool
 
     def create_campaign(self, player_name: str, seed: int | None) -> CampaignSummary: ...
 
@@ -363,6 +377,9 @@ class StubEngine:
 
     Replaced by `services/campaign_service.py` + `persistence/repositories.py`.
     """
+
+    # In-memory: state dies with the process. A's engine sets this True.
+    DURABLE = False
 
     def __init__(self) -> None:
         self._campaigns: dict[str, _Campaign] = {}
@@ -895,10 +912,214 @@ class StubHarness:
 
 
 # ---------------------------------------------------------------------------
+# STUB(A) — file-backed engine: durability without Atlas
+# ---------------------------------------------------------------------------
+
+
+def _encode(value: Any) -> Any:
+    """JSON default hook for the few non-JSON types in the world."""
+    if isinstance(value, set):
+        return sorted(value)
+    if hasattr(value, "model_dump"):  # pydantic models (VisibleFeature)
+        return value.model_dump()
+    raise TypeError(f"cannot serialise {type(value).__name__}")
+
+
+class FileBackedEngine(StubEngine):
+    """# STUB(A) — the in-memory world, written to a JSON file after each write.
+
+    This exists so the §29.2 demo beat — kill the process, resume, state is
+    correct — can be shown **before** Atlas is wired up, and so it still works
+    if Atlas is unavailable on the day. It is deliberately not a database: no
+    transactions, no concurrency beyond the orchestrator's per-campaign lock,
+    one file rewritten per turn.
+
+    It is insurance, not a destination. When A's engine lands, `get_engine()`
+    returns that instead and this class stops being used.
+
+    Enabled with ``STUB_STATE_FILE=<path>``.
+    """
+
+    DURABLE = True
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self._path = Path(path)
+        # The orchestrator's locks are per campaign, so two campaigns can be
+        # in flight at once and both reach _save(). Without this, they would
+        # race on one shared temp path and interleave the whole world file.
+        self._save_lock = threading.Lock()
+        self._load()
+
+    # ---- persistence ----
+
+    def _load(self) -> None:
+        if not self._path.exists():
+            return
+        try:
+            self._load_unsafe()
+        except Exception as exc:  # noqa: BLE001
+            # Anything at all — unreadable file, malformed JSON, or a document
+            # written by an older field layout (which raises TypeError from the
+            # dataclass constructors below). None of it may take the server down
+            # mid-demo: quarantine the file and start empty.
+            logger.error("could not load %s (%s); starting empty", self._path, exc)
+            self._campaigns.clear()
+            self._counter = 0
+            try:
+                self._path.replace(self._path.with_suffix(".corrupt"))
+            except OSError:  # pragma: no cover - best effort
+                pass
+
+    def _load_unsafe(self) -> None:
+        raw = json.loads(self._path.read_text(encoding="utf-8"))
+
+        self._counter = raw.get("counter", 0)
+        for doc in raw.get("campaigns", []):
+            camp = _Campaign(
+                campaign_id=doc["campaign_id"],
+                player_name=doc["player_name"],
+                seed=doc["seed"],
+                status=doc["status"],
+                current_turn=doc["current_turn"],
+                player_id=doc["player_id"],
+                player_cell=doc["player_cell"],
+                hp=doc["hp"],
+                max_hp=doc["max_hp"],
+                mp=doc["mp"],
+                max_mp=doc["max_mp"],
+                level=doc["level"],
+                xp=doc["xp"],
+                adjacency=doc["adjacency"],
+                discovered=set(doc["discovered"]),
+                rumored=set(doc["rumored"]),
+                boss_cell=doc["boss_cell"],
+                inventory=[_Item(**i) for i in doc["inventory"]],
+                updated_at=doc["updated_at"],
+                turn_order=list(doc.get("turn_order", [])),
+            )
+            camp.cells = {
+                key: _Cell(
+                    key=c["key"],
+                    x=c["x"],
+                    y=c["y"],
+                    name=c["name"],
+                    description=c["description"],
+                    generated=c["generated"],
+                    boss=c["boss"],
+                    features=[VisibleFeature(**f) for f in c["features"]],
+                    characters=[_Character(**ch) for ch in c["characters"]],
+                    items=[_Item(**i) for i in c["items"]],
+                )
+                for key, c in doc["cells"].items()
+            }
+            camp.turns = {
+                turn_id: TurnRecord(**record)
+                for turn_id, record in doc.get("turns", {}).items()
+            }
+            self._campaigns[camp.campaign_id] = camp
+
+        logger.info("loaded %d campaign(s) from %s", len(self._campaigns), self._path)
+
+    def _save(self) -> None:
+        with self._save_lock:
+            self._save_locked()
+
+    def _save_locked(self) -> None:
+        payload = {
+            "counter": self._counter,
+            "campaigns": [
+                {
+                    **{
+                        field: getattr(camp, field)
+                        for field in (
+                            "campaign_id",
+                            "player_name",
+                            "seed",
+                            "status",
+                            "current_turn",
+                            "player_id",
+                            "player_cell",
+                            "hp",
+                            "max_hp",
+                            "mp",
+                            "max_mp",
+                            "level",
+                            "xp",
+                            "adjacency",
+                            "discovered",
+                            "rumored",
+                            "boss_cell",
+                            "updated_at",
+                            "turn_order",
+                        )
+                    },
+                    "inventory": [asdict(i) for i in camp.inventory],
+                    "cells": {k: asdict(c) for k, c in camp.cells.items()},
+                    "turns": {k: asdict(r) for k, r in camp.turns.items()},
+                }
+                for camp in list(self._campaigns.values())
+            ],
+        }
+        # Write to a temporary file and replace, so a crash mid-write cannot
+        # leave a half-written world behind. The temp name carries the thread
+        # id as well, so a stray concurrent writer can never share it.
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_suffix(f".{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(
+                json.dumps(payload, default=_encode, indent=1), encoding="utf-8"
+            )
+            tmp.replace(self._path)
+        finally:
+            # replace() consumes the temp file; this only matters if the write
+            # itself raised part-way through.
+            if tmp.exists():  # pragma: no cover - failure path
+                tmp.unlink(missing_ok=True)
+
+    # ---- write-through overrides ----
+
+    def create_campaign(self, player_name: str, seed: int | None) -> CampaignSummary:
+        summary = super().create_campaign(player_name, seed)
+        self._save()
+        return summary
+
+    def commit_turn(
+        self, view: WorldView, resolution: EngineResolution, turn_id: str
+    ) -> CommitResult:
+        result = super().commit_turn(view, resolution, turn_id)
+        self._save()
+        return result
+
+    def put_turn(self, record: TurnRecord) -> None:
+        super().put_turn(record)
+        self._save()
+
+    def generate_room(self, campaign_id: str, key: str) -> None:
+        super().generate_room(campaign_id, key)
+        self._save()
+
+
+# ---------------------------------------------------------------------------
 # Selector — THE ONE PLACE stubs are swapped for real implementations
 # ---------------------------------------------------------------------------
 
-_ENGINE: EnginePort = StubEngine()
+
+def _build_engine() -> EnginePort:
+    """Choose an engine. A: return your real one from here.
+
+    Order of preference once A's engine exists:
+      1. A's Atlas-backed engine when MONGODB_URI is configured;
+      2. FileBackedEngine when STUB_STATE_FILE is set (durable, no Atlas);
+      3. the in-memory StubEngine.
+    """
+    state_file = os.getenv("STUB_STATE_FILE", "").strip()
+    if state_file:
+        return FileBackedEngine(state_file)
+    return StubEngine()
+
+
+_ENGINE: EnginePort = _build_engine()
 _HARNESS: HarnessPort = StubHarness()
 
 
@@ -906,8 +1127,9 @@ def get_engine() -> EnginePort:
     """Return the active engine (Developer A's seam).
 
     A: when `services/campaign_service.py` + `persistence/repositories.py` are
-    ready, construct the real adapter here (gated on `settings.mongodb_uri`)
-    and return it. Nothing else in `api/` or `turn_orchestrator.py` changes.
+    ready, construct the real adapter in `_build_engine()` (gated on
+    `settings.mongodb_uri`). Nothing else in `api/` or `turn_orchestrator.py`
+    changes.
     """
     return _ENGINE
 
@@ -934,6 +1156,19 @@ def set_harness(harness: HarnessPort) -> None:
 
 
 def reset_stubs() -> None:
-    """Drop all in-memory campaign state (used between tests)."""
-    set_engine(StubEngine())
+    """Drop all campaign state and rebuild the configured engine.
+
+    Tests call this between cases. It rebuilds through `_build_engine()` so a
+    durable configuration is preserved rather than silently downgraded to the
+    in-memory stub — and it deletes the state file, because "drop all state"
+    that left a file behind would leak one test's world into the next.
+    """
+    state_file = os.getenv("STUB_STATE_FILE", "").strip()
+    if state_file:
+        for path in (Path(state_file), Path(state_file).with_suffix(".tmp")):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:  # pragma: no cover - best effort
+                pass
+    set_engine(_build_engine())
     set_harness(StubHarness())
