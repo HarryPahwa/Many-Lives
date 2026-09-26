@@ -19,7 +19,8 @@ from app.harness.model_client import ModelClient
 
 
 _SYSTEM = """You narrate a grounded dark-fantasy dungeon in second-person present tense.
-Describe only supplied events and the current snapshot. Never invent an entity, exit,
+Describe only supplied events and the current snapshot. Narrate events in event_index
+order: the player's action first, then any responses to it. Never invent an entity, exit,
 outcome, number, or world fact. Every character, item, or feature mentioned in prose
 must have at least a present claim. Historical memories are background; current state
 wins. When social is supplied, the NPC answers the player's recent_dialogue with at

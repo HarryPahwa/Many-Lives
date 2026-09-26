@@ -27,7 +27,7 @@ from app.harness.adjudicator import adjudicate as domain_adjudicate
 from app.harness.context_builder import ContextView, build_context as domain_build_context
 from app.harness.context_policy import seed_context_policy, select_action_class
 from app.harness.memory_retriever import retrieve
-from app.harness.model_client import ModelClient
+from app.harness.model_client import ModelClient, ModelOutputError
 from app.harness.narrator import fallback_narration, narrate as domain_narrate
 from app.services.stubs import EngineResolution, NarrationResult, Proposal, WorldView
 
@@ -322,13 +322,18 @@ class ProductionHarness:
             *(feature.id for feature in view.visible_cell.features),
             *(item.id for item in view.visible_cell.items),
         }
-        result = domain_adjudicate(
-            player_text=text,
-            context_text=context_text,
-            actor_id=view.player_id,
-            known_ids=known_ids,
-            client=self.client,
-        )
+        try:
+            result = domain_adjudicate(
+                player_text=text,
+                context_text=context_text,
+                actor_id=view.player_id,
+                known_ids=known_ids,
+                client=self.client,
+            )
+        except ModelOutputError:
+            # §7.1.3: invalid structured output after retries rejects the turn.
+            _logger.warning("adjudicator output invalid after retries", exc_info=True)
+            return None, []
         proposal = result.proposal
         params: dict[str, Any] = {}
         if proposal.check is not None:

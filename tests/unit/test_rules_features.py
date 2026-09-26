@@ -137,6 +137,27 @@ def test_talk_utterance_reaches_narrator_social_context():
     assert social.recent_dialogue == ["Player: ask keeper his name"]
 
 
+def test_invalid_adjudicator_output_rejects_instead_of_raising():
+    from app.services import stubs  # noqa: F401 - import order avoids a known cycle
+    from app.api.schemas import PlayerState, VisibleCell
+    from app.harness.model_client import ModelOutputError
+    from app.services.harness_adapter import ProductionHarness
+
+    class FailingClient:
+        def structured(self, *args, **kwargs):
+            raise ModelOutputError("Structured output failed for ADJUDICATOR after 3 attempts")
+
+    world = stubs.WorldView(
+        campaign_id="c", player_id="player", campaign_status="ACTIVE", current_turn=1,
+        player=PlayerState(hp=20, max_hp=20, mp=6, max_mp=6, level=1, xp=0,
+                           pending_level_ups=0, cell_id="cell_0_0"),
+        visible_cell=VisibleCell(cell_id="cell_0_0", name="Archive", description="",
+                                 exits=[], features=[], items=[], characters=[]),
+    )
+    harness = ProductionHarness(client=FailingClient())
+    assert harness.adjudicate("smash it", "", world, "CREATIVE") == (None, [])
+
+
 def test_compound_commands_go_to_the_adjudicator():
     assert parse_fast_path("talk to keeper and ask his name", "player") is None
     assert parse_fast_path("talk to keeper about the door", "player") is None
