@@ -14,6 +14,7 @@ interchangeable.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -62,8 +63,28 @@ _APPLIED_STATUSES = frozenset(
 
 _SOCIAL_ACTIONS = frozenset({"TALK", "PERSUADE", "DECEIVE", "INTIMIDATE"})
 
-# Test-only shortcut into the death/respawn path; honoured only with DEBUG_ENDPOINTS=true.
+# Test-only shortcuts; honoured only with DEBUG_ENDPOINTS=true.
 _DEBUG_DIE_COMMANDS = frozenset({"/die", "debug die", "kill myself"})
+_DEBUG_TARGET = re.compile(
+    r"^(murder|reanimate)\s+(?:the\s+)?(\S.*)$", re.IGNORECASE
+)
+
+
+def _debug_target_command(text: str) -> tuple[str, str] | None:
+    match = _DEBUG_TARGET.match(text.strip())
+    if match is None:
+        return None
+    query = match.group(2).strip()
+    if not query:
+        return None
+    return match.group(1).lower(), query
+
+
+def _debug_murder_query(text: str) -> str | None:
+    parsed = _debug_target_command(text)
+    if parsed is None or parsed[0] != "murder":
+        return None
+    return parsed[1]
 
 
 class CampaignNotFound(LookupError):
@@ -146,11 +167,24 @@ class TurnOrchestrator:
 
         from app.config import get_settings
 
-        if (
-            get_settings().debug_endpoints
-            and request.input.strip().lower() in _DEBUG_DIE_COMMANDS
-        ):
+        debug = get_settings().debug_endpoints
+        debug_command = _debug_target_command(request.input) if debug else None
+        if debug and request.input.strip().lower() in _DEBUG_DIE_COMMANDS:
             intent = Intent("WAIT", request.player_id, params={"debug_die": 1})
+            record.path = "DEBUG"
+        elif debug_command and debug_command[0] == "murder":
+            intent = Intent(
+                "ATTACK",
+                request.player_id,
+                params={"query": debug_command[1], "debug_murder": True},
+            )
+            record.path = "DEBUG"
+        elif debug_command and debug_command[0] == "reanimate":
+            intent = Intent(
+                "WAIT",
+                request.player_id,
+                params={"query": debug_command[1], "debug_reanimate": True},
+            )
             record.path = "DEBUG"
         elif intent is not None:
             record.path = "FAST"

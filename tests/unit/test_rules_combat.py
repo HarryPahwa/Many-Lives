@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from app.domain.rules import resolve_world_action
 from app.domain.types import ActionIntent, ActionType
+from app.services.turn_orchestrator import _debug_murder_query
 
 
 def snapshot(*, enemy_hp=1):
@@ -29,6 +30,111 @@ def snapshot(*, enemy_hp=1):
     return SimpleNamespace(campaign=campaign, player=player, current_cell=cell,
                            destination_cell=None, characters=(player, enemy), items=(),
                            container_items=(), owned_items=())
+
+
+def test_debug_murder_query_reads_the_target_name():
+    assert _debug_murder_query("murder goblin") == "goblin"
+    assert _debug_murder_query("Murder the tunnel goblin") == "tunnel goblin"
+    assert _debug_murder_query("attack goblin") is None
+    assert _debug_murder_query("murder") is None
+    assert _debug_murder_query("reanimate goblin") is None
+
+
+def test_debug_murder_kills_a_creature_by_partial_name():
+    view = snapshot(enemy_hp=100)
+    view.characters[1]["name"] = "tunnel goblin"
+    view.characters[1]["character"]["dodge_pct"] = 100
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.ATTACK, actor_id="player",
+                     params={"query": "goblin", "debug_murder": True}),
+        view, turn_id="murder")
+    assert result.accepted
+    assert [event.type.value for event in result.events] == [
+        "ATTACK_RESOLVED", "ENTITY_DIED", "XP_GAINED"
+    ]
+    assert result.events[0].summary == "You slay tunnel goblin."
+    assert result.events[0].payload["hp_after"] == 0
+    assert result.events[0].payload["damage"] == 100
+    enemy = next(mutation for mutation in result.mutations
+                 if mutation.document_id == "enemy")
+    assert enemy.set_fields["character"]["status"] == "DEAD"
+    assert enemy.set_fields["character"]["hp"] == 0
+
+
+def test_debug_murder_rejects_a_missing_or_ambiguous_name():
+    missing = resolve_world_action(
+        ActionIntent(action_type=ActionType.ATTACK, actor_id="player",
+                     params={"query": "dragon", "debug_murder": True}),
+        snapshot(), turn_id="murder-missing")
+    assert not missing.accepted
+    assert missing.reason == "There's nothing here by that name to murder."
+
+    view = snapshot()
+    view.characters[1]["name"] = "tunnel goblin"
+    other = {
+        "entity_id": "enemy_2", "entity_type": "ENEMY", "name": "cave goblin", "version": 0,
+        "location": {"kind": "CELL", "ref_id": "cell_0_0", "slot": None},
+        "character": dict(view.characters[1]["character"]),
+    }
+    view.characters = (*view.characters, other)
+    ambiguous = resolve_world_action(
+        ActionIntent(action_type=ActionType.ATTACK, actor_id="player",
+                     params={"query": "goblin", "debug_murder": True}),
+        view, turn_id="murder-both")
+    assert not ambiguous.accepted
+    assert ambiguous.reason == "More than one creature matches that name."
+
+
+def test_debug_reanimate_restores_a_fallen_creature_to_full_health():
+    view = snapshot(enemy_hp=40)
+    view.characters[1]["name"] = "tunnel goblin"
+    view.characters[1]["character"]["hp"] = 0
+    view.characters[1]["character"]["status"] = "DEAD"
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.WAIT, actor_id="player",
+                     params={"query": "goblin", "debug_reanimate": True}),
+        view, turn_id="rise")
+    assert result.accepted
+    assert [event.type.value for event in result.events] == ["ENTITY_REANIMATED"]
+    assert result.events[0].summary == "tunnel goblin rises, restored to full health."
+    assert result.events[0].payload["hp_after"] == 40
+    enemy = next(mutation for mutation in result.mutations
+                 if mutation.document_id == "enemy")
+    assert enemy.set_fields["character"]["status"] == "ALIVE"
+    assert enemy.set_fields["character"]["hp"] == 40
+
+
+def test_debug_reanimate_rejects_the_living_the_missing_and_the_ambiguous():
+    living = resolve_world_action(
+        ActionIntent(action_type=ActionType.WAIT, actor_id="player",
+                     params={"query": "goblin", "debug_reanimate": True}),
+        snapshot(), turn_id="rise-living")
+    assert not living.accepted
+    assert living.reason == "goblin is already alive."
+
+    missing = resolve_world_action(
+        ActionIntent(action_type=ActionType.WAIT, actor_id="player",
+                     params={"query": "dragon", "debug_reanimate": True}),
+        snapshot(), turn_id="rise-missing")
+    assert not missing.accepted
+    assert missing.reason == "There's no fallen creature here by that name."
+
+    view = snapshot()
+    view.characters[1]["name"] = "tunnel goblin"
+    view.characters[1]["character"]["hp"] = 0
+    view.characters[1]["character"]["status"] = "DEAD"
+    other = {
+        "entity_id": "enemy_2", "entity_type": "ENEMY", "name": "cave goblin", "version": 0,
+        "location": {"kind": "CELL", "ref_id": "cell_0_0", "slot": None},
+        "character": dict(view.characters[1]["character"]),
+    }
+    view.characters = (*view.characters, other)
+    ambiguous = resolve_world_action(
+        ActionIntent(action_type=ActionType.WAIT, actor_id="player",
+                     params={"query": "goblin", "debug_reanimate": True}),
+        view, turn_id="rise-both")
+    assert not ambiguous.accepted
+    assert ambiguous.reason == "More than one fallen creature matches that name."
 
 
 def test_attack_kills_and_awards_xp_without_dead_enemy_response():

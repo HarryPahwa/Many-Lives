@@ -74,6 +74,22 @@ def test_history_baselines_door_topology_events_scope_and_closed_tags():
     assert {"INV-06", "INV-07", "INV-08", "INV-10", "INV-12", "INV-13", "INV-15"}.issubset(ids(report))
 
 
+def test_reanimation_clears_the_death_so_the_creature_may_act():
+    campaign, cells, entities, events, turns = valid_state()
+    events.extend([
+        {"campaign_id": "cmp_test", "event_id": "dead", "turn_sequence": 0,
+         "event_index": 0, "type": "ENTITY_DIED", "actor_id": "player",
+         "payload": {"entity_id": "enemy"}},
+        {"campaign_id": "cmp_test", "event_id": "risen", "turn_sequence": 1,
+         "event_index": 0, "type": "ENTITY_REANIMATED", "actor_id": "player",
+         "payload": {"entity_id": "enemy"}},
+        {"campaign_id": "cmp_test", "event_id": "after", "turn_sequence": 2,
+         "event_index": 0, "type": "ATTACK_RESOLVED", "actor_id": "enemy", "payload": {}},
+    ])
+    report = check_invariants(campaign, cells, entities, events, turns, expected_key_count=0)
+    assert "INV-06" not in ids(report)
+
+
 def test_key_and_player_dodge_invariants():
     campaign, cells, entities, events, turns = valid_state()
     entities[0]["character"]["dodge_pct"] = 41

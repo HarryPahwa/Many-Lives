@@ -566,6 +566,45 @@ def resolve_world_action(
         # Debug-only: the orchestrator sets this flag solely when DEBUG_ENDPOINTS is on.
         player["character"]["hp"] = 0
         apply_death([], current_id)
+    elif action == ActionType.WAIT and intent.params.get("debug_reanimate"):
+        # Debug-only. Restores one fallen creature in this room to full health.
+        query = str(intent.params.get("query") or "").strip()
+        here = [entity for entity in characters
+                if entity["location"]["ref_id"] == current_id
+                and entity["entity_id"] != player["entity_id"]]
+
+        def named(pool: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            exact = [entity for entity in pool
+                     if entity["entity_id"] == query
+                     or entity.get("name", "").casefold() == query.casefold()]
+            needle = query.casefold()
+            return exact or [entity for entity in pool
+                             if needle and needle in entity.get("name", "").casefold()]
+
+        fallen = named([entity for entity in here if entity["character"]["status"] == "DEAD"])
+        if len(fallen) > 1:
+            return Resolution(False, "More than one fallen creature matches that name.")
+        if not fallen:
+            standing = named(
+                [entity for entity in here if entity["character"]["status"] == "ALIVE"]
+            )
+            if len(standing) == 1:
+                return Resolution(False, f"{label(standing[0]['entity_id'])} is already alive.")
+            return Resolution(False, "There's no fallen creature here by that name.")
+        target = fallen[0]
+        max_hp = int(target["character"]["max_hp"])
+        target["character"]["hp"] = max_hp
+        target["character"]["status"] = "ALIVE"
+        name = label(target["entity_id"])
+        event(
+            EventType.ENTITY_REANIMATED,
+            player["entity_id"],
+            [player["entity_id"], target["entity_id"]],
+            current_id,
+            {"entity_id": target["entity_id"], "hp_after": max_hp},
+            f"{name} rises, restored to full health.",
+            memory=MemoryStatus.NOT_REQUIRED,
+        )
     elif action == ActionType.WAIT:
         environment_response(current_id)
     elif action == ActionType.SEARCH:
@@ -678,6 +717,67 @@ def resolve_world_action(
                 -20 if outcome.success else -40,
                 reason_event_index=check_event_index,
             )
+        environment_response(current_id)
+    elif action == ActionType.ATTACK and intent.params.get("debug_murder"):
+        # Debug-only. The orchestrator sets this flag when DEBUG_ENDPOINTS is on.
+        query = str(intent.params.get("query") or "").strip()
+        living = [entity for entity in characters
+                  if entity["location"]["ref_id"] == current_id
+                  and entity["character"]["status"] == "ALIVE"
+                  and entity["entity_id"] != player["entity_id"]]
+        exact = [entity for entity in living
+                 if entity["entity_id"] == query
+                 or entity.get("name", "").casefold() == query.casefold()]
+        needle = query.casefold()
+        matches = exact or [entity for entity in living
+                            if needle and needle in entity.get("name", "").casefold()]
+        if len(matches) != 1:
+            reason = ("More than one creature matches that name." if len(matches) > 1
+                      else "There's nothing here by that name to murder.")
+            return Resolution(False, reason)
+        target = matches[0]
+        hp_before = int(target["character"]["hp"])
+        target["character"]["hp"] = 0
+        target["character"]["status"] = "DEAD"
+        name = label(target["entity_id"])
+        event(
+            EventType.ATTACK_RESOLVED,
+            player["entity_id"],
+            [player["entity_id"], target["entity_id"]],
+            current_id,
+            {
+                "attacker_id": player["entity_id"],
+                "defender_id": target["entity_id"],
+                "attacker_name": "you",
+                "defender_name": name,
+                "dodged": False,
+                "damage": hp_before,
+                "hp_before": hp_before,
+                "hp_after": 0,
+                "effective_dodge": 0,
+                "weapon_bonus": 0,
+                "armor_bonus": 0,
+                "variance": 0,
+                "rolls": [],
+            },
+            f"You slay {name}.",
+            memory=MemoryStatus.PENDING,
+        )
+        event(EventType.ENTITY_DIED, player["entity_id"],
+              [player["entity_id"], target["entity_id"]], current_id,
+              {"entity_id": target["entity_id"]}, f"{name} died.",
+              memory=MemoryStatus.PENDING)
+        xp = kill_xp(player["character"]["level"], target["character"]["level"],
+                     boss=target["entity_type"] == "BOSS")
+        award = award_xp(player["character"], xp)
+        player["character"]["xp"] = award.xp_after
+        player["character"]["pending_level_ups"] = award.pending_level_ups_after
+        player["player"]["kills"] += 1
+        player["player"]["damage_dealt_since_death"] += hp_before
+        event(EventType.XP_GAINED, player["entity_id"],
+              [player["entity_id"], target["entity_id"]], current_id,
+              {"amount": xp, "reason": "KILL", "target_id": target["entity_id"]},
+              f"You gain {xp} XP.")
         environment_response(current_id)
     elif action == ActionType.ATTACK:
         query = str(intent.params.get("target_id") or intent.params.get("query") or "")

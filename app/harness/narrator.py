@@ -130,6 +130,7 @@ def fallback_narration(events: list[Event], snapshot: CellSnapshot) -> Narration
             "ATTACK_RESOLVED": "The clash leaves its mark in the room.",
             "ITEM_TRANSFERRED": "The exchange is complete.",
             "ENTITY_DIED": "A stillness settles over the fallen.",
+            "ENTITY_REANIMATED": "The fallen stirs and stands, whole again.",
             "FEATURE_STATE_CHANGED": "Something in the room has changed.",
             "DISPOSITION_CHANGED": "The air between you shifts.",
             "DIALOGUE": "Your words hang in the dungeon air.",
