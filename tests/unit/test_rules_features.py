@@ -158,6 +158,18 @@ def test_invalid_adjudicator_output_rejects_instead_of_raising():
     assert harness.adjudicate("smash it", "", world, "CREATIVE") == (None, [])
 
 
+def test_debug_die_runs_death_and_respawn():
+    view = snapshot()
+    view.characters[1]["character"]["status"] = "DEAD"
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.WAIT, actor_id="player", params={"debug_die": 1}),
+        view, turn_id="die-1")
+    assert result.accepted
+    types = [event.type.value for event in result.events]
+    assert types[0] == "PLAYER_DIED" and "PLAYER_RESPAWNED" in types
+    assert result.events[0].payload["killer_ids"] == []
+
+
 def test_compound_commands_go_to_the_adjudicator():
     assert parse_fast_path("talk to keeper and ask his name", "player") is None
     assert parse_fast_path("talk to keeper about the door", "player") is None

@@ -62,6 +62,9 @@ _APPLIED_STATUSES = frozenset(
 
 _SOCIAL_ACTIONS = frozenset({"TALK", "PERSUADE", "DECEIVE", "INTIMIDATE"})
 
+# Test-only shortcut into the death/respawn path; honoured only with DEBUG_ENDPOINTS=true.
+_DEBUG_DIE_COMMANDS = frozenset({"/die", "debug die", "kill myself"})
+
 
 class CampaignNotFound(LookupError):
     """Unknown campaign -> HTTP 404 (§17.1)."""
@@ -141,7 +144,15 @@ class TurnOrchestrator:
         intent = engine.parse_fast_path(request.input, request.player_id)
         manifest: ContextManifest | None = None
 
-        if intent is not None:
+        from app.config import get_settings
+
+        if (
+            get_settings().debug_endpoints
+            and request.input.strip().lower() in _DEBUG_DIE_COMMANDS
+        ):
+            intent = Intent("WAIT", request.player_id, params={"debug_die": 1})
+            record.path = "DEBUG"
+        elif intent is not None:
             record.path = "FAST"
         else:
             record.path = "ADJUDICATED"

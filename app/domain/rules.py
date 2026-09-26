@@ -542,6 +542,10 @@ def resolve_world_action(
     action = intent.action_type
     if action == ActionType.LOOK:
         pass
+    elif action == ActionType.WAIT and intent.params.get("debug_die"):
+        # Debug-only: the orchestrator sets this flag solely when DEBUG_ENDPOINTS is on.
+        player["character"]["hp"] = 0
+        apply_death([], current_id)
     elif action == ActionType.WAIT:
         environment_response(current_id)
     elif action == ActionType.SEARCH:
