@@ -1,5 +1,5 @@
-"""Run the probe suite under a named policy version (TDD §16.2, §20.3).
+"""Probe runner entry point.
 
-Writes one evaluations document per run.
-Scaffold only.
+TODO(A/C): provide a canonical repository-backed fixture factory and register
+this script once the evaluation routes have an execution environment.
 """

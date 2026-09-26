@@ -1,6 +1,7 @@
-"""Evaluation routes (P0.5) (TDD §17.2): run, optimize, latest.
+"""Evaluation routes (P0.5) — owned by Developer C.
 
-Scaffold: empty router; endpoints wired later.
+Developer B supplies probe, metric, and optimizer functions in ``app.harness``.
+TODO(C): bind these routes to A's canonical repository and B's probe runner.
 """
 
 from fastapi import APIRouter
