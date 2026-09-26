@@ -30,6 +30,14 @@
 
     <main id="app-main">
       <section id="narrative-panel">
+        <div class="speech-bar">
+          <label class="speech-toggle">
+            <input id="speech-toggle" type="checkbox" />
+            Speak narration
+          </label>
+          <button id="speech-replay" type="button" disabled>Replay</button>
+          <span id="speech-status" class="speech-status"></span>
+        </div>
         <div id="narrative" role="log" aria-live="polite"></div>
         <form id="input-form" autocomplete="off">
           <input
@@ -44,7 +52,8 @@
         </form>
         <p id="hint">
           Fast-path commands skip the model entirely: north, south, east, west,
-          look, wait, take &lt;item&gt;, attack &lt;target&gt;.
+          look, wait, take &lt;item&gt;, attack &lt;target&gt;. Narration is
+          read aloud when speech is on.
         </p>
       </section>
 

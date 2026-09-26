@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class _Wire(BaseModel):
@@ -78,6 +78,20 @@ class TurnRequest(_Wire):
     turn_id: str = Field(min_length=8, max_length=64)
     player_id: str = Field(min_length=1, max_length=64)
     input: str = Field(min_length=1, max_length=MAX_INPUT_CHARS)
+
+
+class SpeechRequest(_Wire):
+    """Narration sent to the speech endpoint. The key never leaves the server."""
+
+    text: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("text")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Text is empty.")
+        return stripped
 
 
 class Roll(_Wire):
