@@ -23,7 +23,9 @@ Describe only supplied events and the current snapshot. Narrate events in event_
 order: the player's action first, then any responses to it. Never invent an entity, exit,
 outcome, number, or world fact. Every character, item, or feature mentioned in prose
 must have at least a present claim. Historical memories are background; current state
-wins. When social is supplied, the NPC answers the player's recent_dialogue with at
+wins. Never write an entity id. Name characters and items from the snapshot or from
+attacker_name, defender_name, killer_names, and item_name on the events. When
+social is supplied, the NPC answers the player's recent_dialogue with at
 least one quoted line of speech, in character and shaped by disposition. NPC speech may
 reveal only supplied allowed_facts or revealed_fact; for anything else (a personal name,
 history, directions) the NPC deflects, evades, or answers vaguely instead of inventing
@@ -48,6 +50,38 @@ def _model_call(result) -> ModelCallRecord:
 
 def _snapshot_payload(snapshot: CellSnapshot) -> dict[str, object]:
     return snapshot.model_dump(mode="json")
+
+
+def _display_names(events: list[Event], snapshot: CellSnapshot) -> dict[str, str]:
+    """Ids the player must not see, mapped to the name known when the event was written."""
+    names: dict[str, str] = {}
+    for entity in (*snapshot.features, *snapshot.characters, *snapshot.items):
+        if entity.name and entity.name != entity.entity_id:
+            names[entity.entity_id] = entity.name
+    for event in events:
+        payload = event.payload
+        for id_key, name_key in (
+            ("attacker_id", "attacker_name"),
+            ("defender_id", "defender_name"),
+            ("item_id", "item_name"),
+        ):
+            entity_id = payload.get(id_key)
+            name = payload.get(name_key)
+            if isinstance(entity_id, str) and isinstance(name, str) and name and name != entity_id:
+                names[entity_id] = name
+        killers = payload.get("killer_ids")
+        killer_names = payload.get("killer_names")
+        if isinstance(killers, list) and isinstance(killer_names, list):
+            for entity_id, name in zip(killers, killer_names):
+                if isinstance(entity_id, str) and isinstance(name, str) and name and name != entity_id:
+                    names[entity_id] = name
+    return names
+
+
+def _use_names(prose: str, names: dict[str, str]) -> str:
+    for entity_id, name in sorted(names.items(), key=lambda item: len(item[0]), reverse=True):
+        prose = prose.replace(entity_id, name)
+    return prose
 
 
 def narrate(
@@ -79,9 +113,11 @@ def narrate(
         max_output_tokens=500,
         timeout_s=25.0,
     )
-    if len(result.parsed.prose.split()) > 120:
+    prose = _use_names(result.parsed.prose, _display_names(events or [], snapshot))
+    parsed = result.parsed.model_copy(update={"prose": prose})
+    if len(parsed.prose.split()) > 120:
         raise ValueError("Narration exceeds the 120-word limit")
-    return result.parsed, _model_call(result)
+    return parsed, _model_call(result)
 
 
 def fallback_narration(events: list[Event], snapshot: CellSnapshot) -> NarrationResult:

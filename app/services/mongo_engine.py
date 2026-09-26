@@ -288,6 +288,15 @@ class MongoEngine:
             exits=self._exits(campaign, snapshot.current_cell["cell_id"]),
         )
 
+    @staticmethod
+    def _visible_disposition(entity: dict[str, Any], player_id: str) -> str | None:
+        stored = (entity["character"].get("disposition", {}).get(player_id) or {}).get("state")
+        if stored:
+            return stored
+        if entity.get("entity_type") in {"ENEMY", "BOSS"}:
+            return "HOSTILE"
+        return None
+
     def _visible_cell(self, snapshot: PersistenceWorldView) -> VisibleCell:
         cell = snapshot.current_cell
         room = cell.get("room") or {}
@@ -301,7 +310,7 @@ class MongoEngine:
             VisibleCharacter(
                 id=entity["entity_id"], name=entity["name"],
                 status=entity["character"]["status"],
-                disposition=(entity["character"].get("disposition", {}).get(player_id) or {}).get("state"),
+                disposition=self._visible_disposition(entity, player_id),
             )
             for entity in snapshot.characters if entity["entity_id"] != player_id
             and entity["location"].get("ref_id") == cell["cell_id"]

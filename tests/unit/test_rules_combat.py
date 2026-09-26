@@ -55,6 +55,62 @@ def test_locked_boss_destination_rejects_move():
     assert "boss door" in result.reason
 
 
+def test_death_summaries_name_the_killer_and_the_dropped_item():
+    view = snapshot()
+    view.player["character"]["hp"] = 1
+    enemy = view.characters[1]
+    enemy["name"] = "tunnel goblin"
+    enemy["character"]["attack"] = 20
+    view.items = ({
+        "entity_id": "item_5_4_1",
+        "entity_type": "ITEM",
+        "name": "brass key",
+        "version": 0,
+        "location": {"kind": "INVENTORY", "ref_id": "player", "slot": None},
+        "item": {"quantity": 1, "max_stack": 1, "stackable": False,
+                 "guarded_by": [], "status": "ACTIVE", "quest_critical": False},
+    },)
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.WAIT, actor_id="player"),
+        view, turn_id="die")
+    summaries = " ".join(event.summary for event in result.events)
+    assert "tunnel goblin struck you for" in summaries
+    assert "You are slain by tunnel goblin." in summaries
+    assert "You drop brass key." in summaries
+    assert "enemy" not in summaries
+    assert "item_5_4_1" not in summaries
+
+
+def test_talk_to_an_enemy_by_id_is_dialogue():
+    """Adjudicated talk names the creature by id. An enemy is a valid target."""
+    view = snapshot()
+    view.characters[1]["name"] = "tunnel goblin"
+    view.characters[1]["character"]["knowledge"] = [{
+        "fact_id": "fact_1", "type": "CELL_HINT", "subject_cell_id": "cell_1_0",
+        "hint": "Eastward.", "revealed_to": [],
+    }]
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.TALK, actor_id="player", targets=["enemy"],
+                     params={"utterance": "ask tunnel goblin his name"}),
+        view, turn_id="talk-enemy")
+    assert result.accepted
+    kinds = [event.type.value for event in result.events]
+    assert kinds[0] == "DIALOGUE"
+    assert result.events[0].payload["npc_id"] == "enemy"
+    assert result.events[0].payload["utterance"] == "ask tunnel goblin his name"
+    assert "FACT_REVEALED" not in kinds
+    assert "ATTACK_RESOLVED" in kinds
+
+
+def test_talk_to_nobody_is_still_rejected():
+    result = resolve_world_action(
+        ActionIntent(action_type=ActionType.TALK, actor_id="player",
+                     params={"query": "dragon"}),
+        snapshot(), turn_id="talk-missing")
+    assert not result.accepted
+    assert result.reason == "There's no one here by that name to speak with."
+
+
 def test_talk_reveals_allowed_fact_and_rumors_cell():
     view = snapshot()
     npc = view.characters[1]
