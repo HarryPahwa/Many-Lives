@@ -496,7 +496,7 @@ def test_adjudication_failure_records_a_machine_readable_reason_code(client: Tes
     from app.services import stubs
 
     class NoProposal(stubs.StubHarness):
-        def adjudicate(self, text, view, action_class):
+        def adjudicate(self, text, context_text, view, action_class):
             return None, []
 
     stubs.set_harness(NoProposal())
