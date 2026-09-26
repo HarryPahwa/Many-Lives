@@ -66,6 +66,20 @@ STUB_STATE_FILE=.state/demo.json uvicorn app.main:app
 The browser page reconnects to the campaign it was last on by itself. Only the
 campaign id is kept in the browser; the world is reloaded from the store.
 
+### Browser tests
+
+```bash
+python -m playwright install chromium   # once
+pytest tests/e2e                        # 13 tests in a real Chromium
+```
+
+They start their own server on a free port with its own state file. Without
+the browser binary they skip rather than fail, so `pytest` stays green on a
+machine that has not installed it. Run everything except them with
+`pytest -m "not e2e"`.
+
+![The harness running](docs/ui-screenshot.png)
+
 ### Smoke test
 
 ```bash
