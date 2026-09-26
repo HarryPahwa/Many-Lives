@@ -29,68 +29,216 @@ or the UI.
 | API, turn orchestrator, UI, minimap, character panel, context inspector | working |
 | Idempotent turns, fog of war, campaign resume, restart recovery | working |
 | Scripted play driver / smoke test (`scripts/play_script.py`) | working |
-| Engine and persistence (A) | stubbed behind `EnginePort` |
-| Model calls and semantic memory (B) | stubbed behind `HarnessPort` |
+| Engine and persistence (A) | Atlas engine behind `get_engine()` when `MONGODB_URI` is set; durable file store otherwise |
+| Model calls and semantic memory (B) | real harness behind `get_harness()` when `USE_FAKE_MODELS=false` |
+| Room visuals (optional) | working; off by default |
+| Spoken narration (optional) | working; needs `ELEVENLABS_API_KEY` |
 
 ## Setup
 
-Requires Python 3.12 or newer.
+Requires Python 3.12 or newer and, for the browser tests, Node.
 
 ```bash
 python -m venv .venv
-.venv/Scripts/activate        # Windows;  source .venv/bin/activate elsewhere
+.venv/Scripts/activate          # Windows;  source .venv/bin/activate elsewhere
 pip install -e ".[dev]"
 
-cp .env.example .env          # never commit .env
+cp .env.example .env            # never commit .env; it is git-ignored
 
-pytest                        # the full suite; no database or model needed
-uvicorn app.main:app --reload # http://127.0.0.1:8000
+pytest -m "not e2e"             # no database, no model, no credentials needed
 ```
 
-Open `http://127.0.0.1:8000` and create a campaign. No credentials are needed
-to play: without `MONGODB_URI` or `OPENROUTER_API_KEY` the app runs on the
-in-memory seam, and every test that would need Atlas skips with a reason
-rather than failing.
+Then start it:
+
+```powershell
+.\scripts\run_local.ps1         # Windows (recommended)
+```
+
+```bash
+STUB_STATE_FILE=.state/demo.json DEBUG_ENDPOINTS=true uvicorn app.main:app
+```
+
+Open **http://127.0.0.1:8000** and click *New campaign*.
+
+Nothing above needs credentials. Without `OPENROUTER_API_KEY` the app runs on
+the in-memory seam with canned narration, and every test that would need Atlas
+skips with a reason rather than failing.
+
+### Why there is a run script
+
+`STUB_STATE_FILE` is read with `os.getenv()` in `app/services/stubs.py`, not
+through pydantic `Settings`, so **putting it in `.env` has no effect**. Without
+it the engine is in-memory and `resume` returns `404 Unknown campaign` after a
+restart — correct behaviour for a non-durable engine, but it looks exactly like
+a bug. `scripts/run_local.ps1` sets it as a real environment variable, frees the
+port if something is still listening, and prints where state and images go.
+
+```powershell
+.\scripts\run_local.ps1                 # durable state, visuals on
+.\scripts\run_local.ps1 -Fresh          # wipe state and images first
+.\scripts\run_local.ps1 -FakeModels     # no provider calls, no spend
+.\scripts\run_local.ps1 -NoVisuals      # text only
+.\scripts\run_local.ps1 -Port 8001      # somewhere else
+```
+
+### Configuration
+
+Everything lives in `.env` (see `.env.example` for the full list of names).
+The settings that change which code actually runs:
+
+| Variable | Effect |
+|---|---|
+| `USE_FAKE_MODELS` | `false` switches on the real harness — Developer B's context builder, adjudicator and narrator. `true` gives canned narration and an adjudicator that only ever proposes `LOOK`. |
+| `DEBUG_ENDPOINTS` | `true` enables the context inspector. With `false`, `/debug/context` returns 404 by design (§22) and the UI hides the panel. |
+| `MONGODB_URI` | When set, the Atlas engine and Atlas-backed memory are used. Unset, the file or in-memory engine is used. |
+| `STUB_STATE_FILE` | Durable JSON world state. **Must be a real environment variable**, not a `.env` entry. |
+| `ENABLE_ROOM_VISUALS` | The room illustrations. See below. |
+| `ELEVENLABS_API_KEY` | Optional spoken narration. Blank keeps narration text-only. |
+
+Verified model configuration — these exact ids were exercised against the live
+provider:
+
+```
+MODEL_DRESSER=google/gemini-2.5-flash-lite
+MODEL_ADJUDICATOR=google/gemini-2.5-flash-lite
+MODEL_NARRATOR=google/gemini-2.5-flash-lite
+MODEL_VERIFIER=google/gemini-2.5-flash-lite
+EMBEDDING_MODEL=perplexity/pplx-embed-v1-0.6b
+EMBEDDING_DIMS=1024      # confirmed: this model returns 1024 dimensions
+```
+
+`EMBEDDING_DIMS` must match the dimension the Atlas vector index was created
+with. A mismatch fails at query time, not at startup.
+
+## Room visuals (optional)
+
+Each room can carry an illustration generated from its committed state. The
+picture is a **read-only projection**, exactly as the narration is: nothing in
+the visuals path writes campaign, cell, entity, event, memory or turn data, and
+no image is ever read back to decide anything.
+
+Full design: `docs/Room_Visuals_TDD.md`.
+
+### Turning it ON
+
+In `.env`:
+
+```
+ENABLE_ROOM_VISUALS=true
+IMAGE_CLIENT=openrouter          # or `fake` for a free, offline placeholder
+AUTO_UPDATE_ROOM_VISUALS=true    # render by itself; false = press the button
+```
+
+Then restart, or use `.\scripts\run_local.ps1` (visuals on by default).
+
+With the flag on an image appears **by itself** when you enter a room that has
+none, and updates by itself when something the picture can show changes — a
+character crossing a health band or dying, a feature changing state, an item
+appearing or leaving.
+
+### Turning it OFF
+
+```
+ENABLE_ROOM_VISUALS=false
+```
+
+then restart, or run `.\scripts\run_local.ps1 -NoVisuals`.
+
+Off is the default, and off means genuinely inert: every visual route returns
+404, the panel never appears, the client makes no visual request at all, and the
+rest of the app behaves exactly as if the feature did not exist.
+
+To keep visuals but render only on demand, set `AUTO_UPDATE_ROOM_VISUALS=false`;
+the panel then shows a *Generate visual* / *Update visual* button.
+
+### What it costs
+
+Roughly **$0.003 per new room** and **$0.007 per update**, 8–10 seconds each.
+Exploring ten rooms is about three cents. Nothing is charged for revisiting a
+room whose picture is still accurate: the stored image is served and no model is
+called. A failed render is never retried automatically, so a broken provider
+cannot bill you on every turn.
+
+Fast-path commands (`north`, `look`, `take …`) never reach any model. Only free
+text does.
+
+### Where the images are stored
+
+With `VISUAL_STORE=file` (the default when `STUB_STATE_FILE` is set):
+
+```
+.visuals/index.json                            records and metadata
+.visuals/<campaign_id>/<asset_id>.img          the JPEG bytes
+.state/demo.json                               the world itself
+```
+
+Both directories are git-ignored. `VISUAL_STORE=mongo` puts the same records in
+the `room_visuals` and `visual_assets` collections; `memory` keeps them only for
+the life of the process.
+
+Images survive a restart in the file and Mongo stores: resume a campaign and the
+same asset id and the same bytes come back, with no regeneration.
+
+One gap worth knowing: the Atlas engine does not implement the optional
+`visual_scene` read, so with `MONGODB_URI` set the service falls back to the
+world view. Images still generate and persist, but health-band changes will not
+mark one out of date.
+
+## Verifying it works
+
+```bash
+pytest -m "not e2e"                        # unit + integration
+pytest tests/e2e                           # real Chromium
+node tests/integration/ui_render_check.js  # headless DOM checks
+node tests/integration/ui_visual_check.js
+python scripts/play_script.py              # 22 checks; exits 0/1/2
+python scripts/seed_stress_history.py      # P07 bounded-context evidence
+```
+
+Tests never call a real provider. `tests/conftest.py` pins them to fakes even
+when `.env` is configured for a live demo — without it, a `.env` carrying
+`USE_FAKE_MODELS=false` turned a 17-second suite into six minutes of billed
+calls. `ALLOW_REAL_MODELS_IN_TESTS=1` is the deliberate escape hatch.
 
 ### Persistence across a restart
 
-To demonstrate the central claim — that continuity comes from stored state and
-not from a chat transcript — give the stub engine a state file:
+The central claim is that continuity comes from stored state, not a transcript.
+Prove it rather than trusting it:
 
-```bash
-STUB_STATE_FILE=.state/demo.json uvicorn app.main:app
-# play a few turns, then kill the process and start it again
-# POST /api/campaigns/{id}/resume returns the same world
+```powershell
+.\scripts\run_local.ps1
+python scripts/play_script.py --seed 9 --demo   # note the campaign id
+
+Stop-Process -Id (Get-NetTCPConnection -LocalPort 8000 -State Listen).OwningProcess -Force
+.\scripts\run_local.ps1                          # a brand new process
 ```
 
-The browser page reconnects to the campaign it was last on by itself. Only the
-campaign id is kept in the browser; the world is reloaded from the store.
+Then resume that campaign in the browser, or call
+`POST /api/campaigns/<ID>/resume`. Room, cell, turn number, inventory and the
+room's image must all be identical to before the kill.
+
+In the browser a reload reconnects by itself: the page stores only the campaign
+id, never game state.
+
+`pkill` does not exist in Git Bash on Windows — use the PowerShell line above.
 
 ### Browser tests
 
 ```bash
 python -m playwright install chromium   # once
-pytest tests/e2e                        # 13 tests in a real Chromium
+pytest tests/e2e                        # 14 tests in a real Chromium
 ```
 
-They start their own server on a free port with its own state file. Without
-the browser binary they skip rather than fail, so `pytest` stays green on a
-machine that has not installed it. Run everything except them with
-`pytest -m "not e2e"`.
+They start their own server on a free port with their own state file, and skip
+rather than fail when the browser binary is absent.
 
 ![The harness running](docs/ui-screenshot.png)
 
 ### Demo
 
-`docs/DEMO.md` is the rehearsed runbook for the three-minute demo: setup, the
-live sequence with what to say, the kill/restart/resume step, likely questions
-with answers grounded in the build, and what to do when something misbehaves.
-
-```bash
-rm -f .state/demo.json
-STUB_STATE_FILE=.state/demo.json DEBUG_ENDPOINTS=true uvicorn app.main:app
-python scripts/play_script.py --seed 9 --demo   # builds the demo campaign
-```
+`docs/DEMO.md` is the rehearsed runbook: the live sequence with what to say, the
+kill/restart/resume step, likely questions answered from the build, and a
+troubleshooting table. `docs/SUBMISSION.md` is the §29.4 checklist.
 
 ### Smoke test
 
@@ -100,6 +248,12 @@ python scripts/play_script.py            # 22 checks; exits 0/1/2
 
 Per TDD §32.2 item 7 this runs after every merge; a failure blocks further
 merges until it is fixed.
+
+### A note on binding
+
+The server listens on `127.0.0.1` only. Do not add `--host 0.0.0.0` on shared
+or venue wifi: there is no authentication anywhere in this app (§28.2 puts it
+out of scope) and `DEBUG_ENDPOINTS=true` exposes internal state.
 
 ## Bounded context: the measured result (P07)
 
