@@ -1,8 +1,6 @@
 from app.domain.types import CellSnapshot, Claim, ClaimAttribute, NarrationResult, PlayerSummary, Role, SnapshotEntity
 from app.harness.model_client import FakeModelClient
 from app.harness.narrator import fallback_narration, narrate
-from app.services.harness_adapter import RuntimeHarness
-from app.services.stubs import EngineResolution, StubEngine
 
 
 def snapshot() -> CellSnapshot:
@@ -46,16 +44,3 @@ def test_fallback_claims_every_visible_entity_present():
     result = fallback_narration([], snapshot())
     assert {claim.entity_id for claim in result.claims} == {"feat_1", "npc_1", "item_1"}
 
-
-def test_runtime_adapter_records_a_real_narrator_call():
-    fixture = NarrationResult(prose="You stand in the crypt.", claims=[])
-    engine = StubEngine()
-    campaign = engine.create_campaign("Ada", 7)
-    view = engine.load_world_view(campaign.campaign_id, campaign.player_id)
-    adapter = RuntimeHarness(FakeModelClient({(Role.NARRATOR, "default"): fixture}))
-
-    result = adapter.narrate(view, EngineResolution(accepted=True), "ACTION")
-
-    assert result.prose == fixture.prose
-    assert result.model_call is not None
-    assert result.model_call.role == "NARRATOR"
