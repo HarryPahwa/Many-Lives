@@ -132,8 +132,8 @@ def test_campaign_can_move_to_an_adjacent_empty_cell() -> None:
     sx, sy = parse_cell_key(result.spawn_cell_id)
     dx, dy = parse_cell_key(destination)
     command = {
-        (0, -1): "north",
-        (0, 1): "south",
+        (0, 1): "north",
+        (0, -1): "south",
         (1, 0): "east",
         (-1, 0): "west",
     }[(dx - sx, dy - sy)]
@@ -182,7 +182,7 @@ def test_revisit_does_not_increment_new_cell_counter() -> None:
     topology = Topology(db.campaigns.find_one({"_id": CAMPAIGN_ID})["topology"])
     sx, sy = parse_cell_key(destination)
     dx, dy = parse_cell_key(result.spawn_cell_id)
-    command = {(0, -1): "north", (0, 1): "south", (1, 0): "east", (-1, 0): "west"}[
+    command = {(0, 1): "north", (0, -1): "south", (1, 0): "east", (-1, 0): "west"}[
         (dx - sx, dy - sy)
     ]
     intent = parse_fast_path(command, result.player_id)

@@ -1,5 +1,6 @@
 """Offline tests for Mongo configuration and handle lifecycle."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,6 +11,11 @@ from app.persistence import mongo
 @pytest.fixture(autouse=True)
 def reset_mongo(monkeypatch: pytest.MonkeyPatch):
     mongo.close_mongo_client()
+    monkeypatch.setattr(
+        mongo,
+        "get_settings",
+        lambda: SimpleNamespace(mongodb_uri="", mongodb_db=""),
+    )
     monkeypatch.delenv("MONGODB_URI", raising=False)
     monkeypatch.delenv("MONGODB_DB", raising=False)
     yield
