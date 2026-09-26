@@ -1,0 +1,15 @@
+# Game balance constants (TDD §4, §11, §13, §14).
+#
+# These are tuning [DEF] values: changing a number here is tuning, not an
+# architecture change. Scaffold — populated as the engine lands.
+#
+# Sections to fill:
+#   stats:          starting stats, level-up increases (§4.4)
+#   experience:     level thresholds, kill XP, death XP (§4.5)
+#   combat:         variance, dodge cap, spell cost/damage (§4.6)
+#   checks:         DCs and stat modifiers per action (§4.7)
+#   inventory:      slots, stack limits, potion amounts, tier bonuses (§4.9)
+#   disposition:    trust thresholds and deltas (§13.9)
+#   world:          grid, keys_required, reservations, edge probability (§4.1, §14)
+#   archetypes:     room archetype weights, carrier split, loot tables (§14.5)
+#   context:        token budget (§11.2)
