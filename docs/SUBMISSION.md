@@ -28,10 +28,11 @@ were verified by running the thing named.
 Run these; all four must pass.
 
 ```bash
-pytest -m "not e2e"     # 157 passed, 5 skipped
+pytest -m "not e2e"     # 162 passed, 5 skipped
 pytest tests/e2e        # 14 passed (needs: playwright install chromium)
 node tests/integration/ui_render_check.js
 python scripts/play_script.py            # 22 checks, exit 0
+python scripts/seed_stress_history.py    # P07, exit 0
 ```
 
 The 5 skips are the §20.2 restart assertions, which are gated on an engine
@@ -42,6 +43,12 @@ are covered; they light up on the Atlas engine when it lands.
 ## Honest status, for the submission text
 
 Write this plainly rather than glossing it. Judges can read the repository.
+
+**The measured claim:** `scripts/seed_stress_history.py` grows stored history
+100x (100 to 10,000 events, 3.8 MB) against Developer B's real context
+builder and shows the per-call context moving 239 to 246 tokens — 1.03x,
+against a 3000-token budget. That is the Long Horizon evidence, and
+`docs/p07_result.json` is the artefact. It is not a billion-token claim.
 
 **What works and is tested:** the full turn lifecycle (§7.1) with per-campaign
 locking and `turn_id` idempotency; campaign create/list/resume; a persistent
