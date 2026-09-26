@@ -6,6 +6,7 @@ with pure harness functions without making ``app.harness`` depend on services.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from time import monotonic
 from typing import Any
@@ -15,6 +16,7 @@ from app.api.schemas import MemoryRef, ModelCall
 from app.domain.types import (
     ActionClass,
     CellSnapshot,
+    Event,
     PlayerSummary,
     Role,
     SnapshotEntity,
@@ -25,8 +27,9 @@ from app.harness.context_policy import seed_context_policy, select_action_class
 from app.harness.memory_retriever import retrieve
 from app.harness.model_client import ModelClient
 from app.harness.narrator import fallback_narration, narrate as domain_narrate
-from app.domain.types import Event
 from app.services.stubs import EngineResolution, NarrationResult, Proposal, WorldView
+
+_logger = logging.getLogger("many_lives.harness")
 
 
 def _domain_events(events: list[dict[str, Any]] | None) -> list[Event] | None:
@@ -43,8 +46,18 @@ def _domain_events(events: list[dict[str, Any]] | None) -> list[Event] | None:
     for document in events:
         try:
             mapped.append(Event(**document))
-        except Exception:  # noqa: BLE001 - post-commit: degrade, never fail
-            continue
+        except Exception as exc:  # noqa: BLE001 - post-commit: degrade, never fail
+            _logger.warning(
+                "dropping event %s from narrator context: %s",
+                document.get("event_id", "<no id>"),
+                exc,
+            )
+    if events and not mapped:
+        _logger.error(
+            "no committed event survived mapping; the narrator will fall back "
+            "to the snapshot alone (%d document(s) rejected)",
+            len(events),
+        )
     return mapped or None
 
 

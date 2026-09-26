@@ -658,12 +658,16 @@ def test_committed_event_documents_satisfy_the_domain_contract(client: TestClien
     from app.domain.types import Event
     from app.services.stubs import get_engine
 
+    engine = get_engine()
+    if not hasattr(engine, "raw_events"):
+        pytest.skip("installed engine does not expose the raw event log")
+
     campaign_id = _create(client)
     _turn(client, campaign_id, "look")
     view = _turn(client, campaign_id, "look").json()
     _turn(client, campaign_id, view["visible_cell"]["exits"][0])
 
-    stored = get_engine().raw_events(campaign_id)
+    stored = engine.raw_events(campaign_id)
     assert stored, "playing should have appended events"
     for document in stored:
         Event(**document)
