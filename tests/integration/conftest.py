@@ -31,8 +31,6 @@ _OWNED_COLLECTIONS = (
     "memories",
     "turns",
     "quests",
-    "context_policies",
-    "evaluations",
 )
 
 
@@ -40,7 +38,6 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "durable: requires an engine whose state survives a restart"
     )
-    config.addinivalue_line("markers", "atlas: requires a configured Atlas test database")
 
 
 @pytest.fixture(scope="session")

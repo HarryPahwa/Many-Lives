@@ -72,10 +72,12 @@ def _as_event(document: dict[str, Any]) -> Event:
     return Event.model_validate(document)
 
 
-def extract_memories(event_ids: list[str], *, db, client: ModelClient) -> list[str]:
+def extract_memories(campaign_id: str, event_ids: list[str], *, db, client: ModelClient) -> list[str]:
     """Embed and store memories; failures are recorded on source events."""
 
-    documents = list(db.events.find({"event_id": {"$in": event_ids}}))
+    documents = list(
+        db.events.find({"campaign_id": campaign_id, "event_id": {"$in": event_ids}})
+    )
     events = [_as_event(document) for document in documents]
     grouped: dict[tuple[str, int], list[Event]] = defaultdict(list)
     for event in events:
@@ -126,7 +128,7 @@ def extract_memories(event_ids: list[str], *, db, client: ModelClient) -> list[s
         return ids
     except Exception:
         db.events.update_many(
-            {"event_id": {"$in": event_ids}},
+            {"campaign_id": campaign_id, "event_id": {"$in": event_ids}},
             {"$set": {"memory_status": MemoryStatus.FAILED.value}, "$inc": {"memory_attempts": 1}},
         )
         raise
@@ -138,22 +140,22 @@ class MemoryWorker:
     def __init__(self, db, client: ModelClient) -> None:
         self.db = db
         self.client = client
-        self._pending: deque[list[str]] = deque()
+        self._pending: deque[tuple[str, list[str]]] = deque()
         self._lock = Lock()
 
-    def enqueue(self, event_ids: list[str]) -> None:
+    def enqueue(self, campaign_id: str, event_ids: list[str]) -> None:
         if event_ids:
             with self._lock:
-                self._pending.append(list(event_ids))
+                self._pending.append((campaign_id, list(event_ids)))
 
     def drain(self) -> None:
         while True:
             with self._lock:
                 if not self._pending:
                     return
-                event_ids = self._pending.popleft()
+                campaign_id, event_ids = self._pending.popleft()
             try:
-                extract_memories(event_ids, db=self.db, client=self.client)
+                extract_memories(campaign_id, event_ids, db=self.db, client=self.client)
             except Exception:
                 continue
 
@@ -165,7 +167,11 @@ class MemoryWorker:
                     {"memory_status": MemoryStatus.FAILED.value, "memory_attempts": {"$lt": 3}},
                 ]
             },
-            {"event_id": 1},
+            {"campaign_id": 1, "event_id": 1},
         )
-        self.enqueue([document["event_id"] for document in documents])
+        grouped: dict[str, list[str]] = defaultdict(list)
+        for document in documents:
+            grouped[document["campaign_id"]].append(document["event_id"])
+        for campaign_id, event_ids in grouped.items():
+            self.enqueue(campaign_id, event_ids)
         self.drain()

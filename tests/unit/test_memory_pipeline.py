@@ -43,7 +43,9 @@ def test_extract_memories_stores_float32_and_marks_sources_complete():
     db = mongomock.MongoClient().dungeon_test
     source = event().model_dump(mode="json")
     db.events.insert_one(source)
-    ids = extract_memories([source["event_id"]], db=db, client=FakeModelClient(embedding_dims=4))
+    ids = extract_memories(
+        "cmp_1", [source["event_id"]], db=db, client=FakeModelClient(embedding_dims=4)
+    )
 
     stored = db.memories.find_one({"_id": ids[0]})
     assert len(decode_embedding(stored["embedding"])) == 4
