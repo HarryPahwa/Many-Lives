@@ -225,6 +225,9 @@ class MongoEngine:
             keys_required=snapshot.campaign["config"]["keys_required"],
         )
 
+    def history_stats(self, campaign_id: str) -> dict[str, int]:
+        return self.repository.history_stats(campaign_id)
+
     def get_turn(self, campaign_id: str, turn_id: str) -> TurnRecord | None:
         document = self.repository.get_turn(campaign_id, turn_id)
         return self._turn_record(document) if document is not None else None

@@ -572,6 +572,85 @@ body.hide-trace .log-trace {
   color: var(--system);
 }
 
+/* ---- bounded context ---- */
+
+#context-panel {
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.budget-line {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.budget-bar {
+  height: 7px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.budget-bar span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: var(--accent);
+}
+
+.budget-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--system);
+}
+
+.context-history {
+  margin: 10px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+#p07-details {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+#p07-details summary {
+  cursor: pointer;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+#p07 {
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.p07-rows {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.p07-row {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 4px 8px;
+  align-items: center;
+  color: var(--muted);
+}
+
+.p07-value {
+  grid-column: 2;
+  font-size: 10.5px;
+  color: var(--system);
+}
+
 /* ---- toast ---- */
 
 #toast {

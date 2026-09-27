@@ -13,13 +13,14 @@ from app.api.schemas import (
     CampaignSummary,
     CreateCampaignRequest,
     CreateCampaignResponse,
+    HistoryStats,
     MapResponse,
     PlayerSheet,
     ResumeRequest,
     ResumeResult,
     TurnRequest,
 )
-from app.services.stubs import get_engine
+from app.services.stubs import get_engine, get_harness
 from app.services.turn_orchestrator import CampaignNotFound, get_orchestrator
 
 router = APIRouter(prefix="/api/campaigns", tags=["campaigns"])
@@ -80,3 +81,23 @@ def get_player(
 ) -> PlayerSheet:
     _require(campaign_id)
     return get_engine().player_sheet(campaign_id, player_id)
+
+
+@router.get("/{campaign_id}/history", response_model=HistoryStats)
+def get_history(campaign_id: str) -> HistoryStats:
+    """How much history this campaign has stored, against the context budget.
+
+    `history_stats` is an optional engine capability (§16.4), so an engine
+    without it reports `supported: false` instead of a 500: the claim this
+    serves is evidence, and evidence that cannot be gathered should say so.
+    """
+    _require(campaign_id)
+    budget = get_harness().context_budget()
+    stats = getattr(get_engine(), "history_stats", None)
+    if not callable(stats):
+        return HistoryStats(
+            campaign_id=campaign_id, supported=False, budget_tokens=budget
+        )
+    return HistoryStats(
+        campaign_id=campaign_id, budget_tokens=budget, **stats(campaign_id)
+    )
