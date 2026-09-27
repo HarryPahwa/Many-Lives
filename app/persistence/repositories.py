@@ -216,6 +216,32 @@ class Repository:
             owned_items=tuple(freeze(document) for document in owned_items),
         )
 
+    def history_stats(self, campaign_id: str) -> dict[str, int]:
+        """Counts and stored size of one campaign's append-only history.
+
+        Read-only and campaign-scoped (§5.10). `$bsonSize` needs MongoDB 4.4+;
+        a deployment that rejects it reports zero bytes rather than failing,
+        because this only feeds a display.
+        """
+        stats = {
+            "events": self._db.events.count_documents({"campaign_id": campaign_id}),
+            "memories": self._db.memories.count_documents({"campaign_id": campaign_id}),
+            "turns": self._db.turns.count_documents({"campaign_id": campaign_id}),
+            "stored_bytes": 0,
+        }
+        pipeline = [
+            {"$match": {"campaign_id": campaign_id}},
+            {"$group": {"_id": None, "bytes": {"$sum": {"$bsonSize": "$$ROOT"}}}},
+        ]
+        try:
+            for collection in (self._db.events, self._db.memories):
+                grouped = next(iter(collection.aggregate(pipeline)), None)
+                if grouped is not None:
+                    stats["stored_bytes"] += int(grouped["bytes"])
+        except Exception:  # noqa: BLE001 - a size estimate is never worth a 500
+            stats["stored_bytes"] = 0
+        return stats
+
     # ---- writes ----
 
     def begin_turn(

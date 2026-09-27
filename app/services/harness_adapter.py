@@ -152,7 +152,7 @@ class _WorldViewContext(ContextView):
         return [_event_from_document(document) for document in reversed(list(documents))]
 
 
-def _wire_manifest(manifest) -> WireContextManifest:
+def _wire_manifest(manifest, budget_tokens: int) -> WireContextManifest:
     return WireContextManifest(
         policy_version=manifest.policy_version,
         components=manifest.components,
@@ -160,6 +160,7 @@ def _wire_manifest(manifest) -> WireContextManifest:
         event_ids=manifest.event_ids,
         memories=[MemoryRef(id=memory.id, score=memory.score) for memory in manifest.memories],
         estimated_tokens=manifest.estimated_tokens,
+        budget_tokens=budget_tokens,
         notes=manifest.flags,
     )
 
@@ -258,6 +259,9 @@ class ProductionHarness:
         self.db = db
         self.policy = seed_context_policy()
 
+    def context_budget(self) -> int:
+        return int(self.policy.budget["max_context_tokens"])
+
     def classify(self, text: str, view: WorldView) -> str:
         visible_entities = [
             {"name": character.name, "entity_type": "NPC", "disposition": character.disposition}
@@ -311,7 +315,7 @@ class ProductionHarness:
             target_ids=target_ids,
             retriever=retriever,
         )
-        return text, _wire_manifest(manifest), vector_search_ms
+        return text, _wire_manifest(manifest, self.context_budget()), vector_search_ms
 
     def adjudicate(
         self, text: str, context_text: str, view: WorldView, action_class: str

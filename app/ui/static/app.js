@@ -322,6 +322,7 @@ async function refreshPanels() {
     ]);
     renderMinimap(map);
     renderCharacter(sheet);
+    refreshHistoryStats();
   } catch (error) {
     // Panels are a view of state, never the source of it: a failed refresh
     // must not interrupt play.
@@ -418,6 +419,9 @@ async function resumeCampaign(campaignId, fromGesture = true) {
     speak(resumed.narration, fromGesture);
     renderRoom(resumed.visible_cell);
     renderMeta(resumed.campaign);
+    // The resume record carries its own manifest, so the budget bar is correct
+    // from the first paint rather than only after the next turn.
+    renderContextBudget({ context_manifest: resumed.manifest, path: "RESUME" });
     window.dispatchEvent(new CustomEvent("campaign-refreshed"));
     refreshInspector(null);
     try {
@@ -704,6 +708,8 @@ async function logTurnTrace(result) {
     }
   }
 
+  renderContextBudget(debug);
+
   if (debug) {
     const route = debug.path === "FAST" ? "FAST (parser, no model)" : debug.path;
     row("route", debug.action_class ? `${route} · class ${debug.action_class}` : route);
@@ -743,6 +749,169 @@ async function logTurnTrace(result) {
   const log = $("narrative");
   log.appendChild(entry);
   log.scrollTop = log.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
+// Bounded context (§11, §16.4)
+//
+// Two claims that must not be confused, so they are rendered apart: the bar is
+// *this* campaign's last model call against the live policy budget, and the
+// P07 block is the offline measurement shipped in docs/p07_result.json. The
+// page states no number it did not receive from the server.
+// ---------------------------------------------------------------------------
+
+const boundedContext = { budget: 3000, loaded: false };
+
+function formatBytes(bytes) {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = Number(bytes) || 0;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const rounded = unit === 0 || value >= 10 ? Math.round(value) : value.toFixed(1);
+  return `${rounded} ${units[unit]}`;
+}
+
+// 100.0 -> "100x", 1.0293 -> "1.03x". Trailing zeros read as false precision.
+function formatRatio(value) {
+  return `${Number(value).toFixed(2).replace(/\.?0+$/, "")}x`;
+}
+
+function budgetBar(fraction) {
+  const bar = document.createElement("div");
+  bar.className = "budget-bar";
+  const fill = document.createElement("span");
+  fill.style.width = `${Math.max(0, Math.min(100, fraction * 100)).toFixed(1)}%`;
+  bar.appendChild(fill);
+  return bar;
+}
+
+function renderContextBudget(debug) {
+  const root = $("context-budget");
+  root.replaceChildren();
+  const manifest = debug && debug.context_manifest;
+  const budget = (manifest && manifest.budget_tokens) || boundedContext.budget;
+  boundedContext.budget = budget;
+
+  const line = document.createElement("p");
+  line.className = "budget-line";
+  if (manifest) {
+    const used = manifest.estimated_tokens || 0;
+    const share = Math.round((used / budget) * 100);
+    line.textContent = `${used} of ${budget} tokens — ${share}% of budget`;
+    root.append(line, budgetBar(used / budget));
+    const detail = document.createElement("p");
+    detail.className = "budget-note";
+    detail.textContent =
+      `${manifest.components.length} components · ` +
+      `${manifest.event_ids.length} recent events · ` +
+      `${manifest.memories.length} memories`;
+    root.appendChild(detail);
+    return;
+  }
+
+  if (debug) {
+    line.textContent = `fast path — nothing was sent to a model (budget ${budget})`;
+  } else if (!state.campaignId) {
+    line.textContent = `no campaign loaded (budget ${budget})`;
+  } else if (!state.debugAvailable) {
+    line.textContent = `per-turn context needs DEBUG_ENDPOINTS=true (budget ${budget})`;
+  } else {
+    line.textContent = `no turn inspected yet (budget ${budget})`;
+  }
+  root.append(line, budgetBar(0));
+}
+
+function renderHistoryStats(stats) {
+  const el = $("context-history");
+  if (!stats) {
+    el.textContent = "";
+    return;
+  }
+  if (!stats.supported) {
+    el.textContent = "This engine does not report stored history.";
+    return;
+  }
+  boundedContext.budget = stats.budget_tokens || boundedContext.budget;
+  el.textContent =
+    `stored: ${stats.events.toLocaleString()} events · ` +
+    `${stats.memories.toLocaleString()} memories · ` +
+    `${stats.turns.toLocaleString()} turns · ${formatBytes(stats.stored_bytes)}`;
+}
+
+function renderBoundedContextResult(result) {
+  const root = $("p07");
+  root.replaceChildren();
+  const budget = result.budget_tokens || boundedContext.budget;
+
+  $("p07-summary").textContent =
+    `Measured: ${formatRatio(result.history_growth_factor)} history, ` +
+    `${formatRatio(result.token_growth_factor)} context`;
+
+  const headline = document.createElement("p");
+  headline.className = "budget-note";
+  headline.textContent =
+    `${result.baseline_events.toLocaleString()} → ` +
+    `${result.checkpoints[result.checkpoints.length - 1].events.toLocaleString()} stored events ` +
+    `moved the per-call context ${result.baseline_tokens} → ` +
+    `${result.peak_estimated_tokens} tokens, against a ${budget}-token budget.`;
+  root.appendChild(headline);
+
+  const rows = document.createElement("div");
+  rows.className = "p07-rows";
+  for (const point of result.checkpoints) {
+    const row = document.createElement("div");
+    row.className = "p07-row";
+    const label = document.createElement("span");
+    label.textContent = `${point.events.toLocaleString()} events`;
+    const value = document.createElement("span");
+    value.className = "p07-value";
+    value.textContent =
+      `${point.estimated_tokens} context tokens · ` +
+      `${formatBytes(point.stored_bytes)} stored`;
+    row.append(label, budgetBar(point.estimated_tokens / budget), value);
+    rows.appendChild(row);
+  }
+  root.appendChild(rows);
+
+  if (result.baseline_note) {
+    const note = document.createElement("p");
+    note.className = "budget-note";
+    note.textContent = result.baseline_note;
+    root.appendChild(note);
+  }
+  if (result.caveat) {
+    const caveat = document.createElement("p");
+    caveat.className = "budget-note";
+    caveat.textContent = result.caveat;
+    root.appendChild(caveat);
+  }
+}
+
+async function loadBoundedContextResult() {
+  if (boundedContext.loaded) return;
+  try {
+    const result = await api("GET", "/api/evaluations/bounded-context");
+    boundedContext.loaded = true;
+    renderBoundedContextResult(result);
+  } catch (error) {
+    $("p07").textContent = `No stored measurement: ${error.message}`;
+  }
+}
+
+async function refreshHistoryStats() {
+  if (!state.campaignId) return;
+  try {
+    renderHistoryStats(
+      await api("GET", `/api/campaigns/${state.campaignId}/history`)
+    );
+  } catch {
+    // Evidence panels are decoration over the turn loop; a failure here is
+    // reported as absence, never as a broken turn.
+    renderHistoryStats(null);
+  }
 }
 
 async function refreshInspector(turnId) {
@@ -1147,6 +1316,10 @@ function init() {
   $("inspector-details").addEventListener("toggle", () => {
     if ($("inspector-details").open) refreshInspector(state.lastTurnId);
   });
+  $("p07-details").addEventListener("toggle", () => {
+    if ($("p07-details").open) loadBoundedContextResult();
+  });
+  renderContextBudget(null);
 
   logLine(
     "Create a campaign or resume an existing one. State lives in the store, not in this page.",

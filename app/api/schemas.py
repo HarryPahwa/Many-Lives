@@ -268,6 +268,9 @@ class ContextManifest(_Wire):
     event_ids: list[str] = Field(default_factory=list)
     memories: list[MemoryRef] = Field(default_factory=list)
     estimated_tokens: int = 0
+    #: The active policy's per-call ceiling, so a client can show the estimate
+    #: against its budget without hardcoding the §11 default.
+    budget_tokens: int = 0
     notes: list[str] = Field(default_factory=list)
 
 
@@ -317,6 +320,24 @@ class DebugContext(_Wire):
     created_at: str | None = None
     committed_at: str | None = None
     narrated_at: str | None = None
+
+
+class HistoryStats(_Wire):
+    """How much history one campaign has stored (§16.4 evidence, read-only).
+
+    Paired with a turn's `estimated_tokens`, this is the bounded-context claim
+    stated over live data: stored history grows, the per-call context does not.
+    `supported` is false when the installed engine cannot count its own
+    history, which is a missing capability rather than an error.
+    """
+
+    campaign_id: str
+    supported: bool = True
+    events: int = 0
+    memories: int = 0
+    turns: int = 0
+    stored_bytes: int = 0
+    budget_tokens: int = 0
 
 
 CreateCampaignResponse.model_rebuild()

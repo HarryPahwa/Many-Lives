@@ -273,6 +273,10 @@ class HarnessPort(Protocol):
 
     def classify(self, text: str, view: WorldView) -> str: ...
 
+    def context_budget(self) -> int:
+        """The active policy's per-call token ceiling (§11)."""
+        ...
+
     def build_context(
         self, view: WorldView, action_class: str, action_text: str | None
     ) -> tuple[str, ContextManifest, int | None]: ...
@@ -986,6 +990,10 @@ class StubHarness:
     """
 
     POLICY_VERSION = 1
+    BUDGET_TOKENS = 3000
+
+    def context_budget(self) -> int:
+        return self.BUDGET_TOKENS
 
     def classify(self, text: str, view: WorldView) -> str:
         low = text.lower()
@@ -1023,6 +1031,7 @@ class StubHarness:
                 else []
             ),
             estimated_tokens=420 + 90 * len(components),
+            budget_tokens=self.BUDGET_TOKENS,
             notes=["STUB(B): canned context; no retrieval performed."],
         )
         text = f"[STUB CONTEXT class={action_class} cell={view.visible_cell.cell_id}]"
