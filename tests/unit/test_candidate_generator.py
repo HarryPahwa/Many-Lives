@@ -3,8 +3,11 @@ from app.domain.types import EventType
 from app.harness.candidate_generator import (
     CandidateGenerationResult,
     FakeCandidateGenerator,
+    ModelCandidateGenerator,
     load_candidate_count,
 )
+from app.domain.types import Role
+from app.harness.model_client import FakeModelClient
 
 
 def test_load_candidate_count_from_yaml():
@@ -72,3 +75,29 @@ def test_fake_candidate_generator_predefined():
     )
     assert len(result.candidates) == 1
     assert result.candidates[0].bundle_id == "custom_1"
+
+
+def test_model_candidate_generator_uses_structured_adjudicator_call():
+    fixture = CandidateGenerationResult(
+        candidates=[
+            MutationBundle(
+                bundle_id="generated_1",
+                action_description="Inspect the rune",
+                rationale="The rune is visible",
+                draft_narration="You study the rune.",
+                mutations=[],
+            )
+        ]
+    )
+    client = FakeModelClient(fixtures={(Role.ADJUDICATOR, "default"): fixture})
+    generator = ModelCandidateGenerator(client)
+
+    result = generator.generate_candidates(
+        "inspect rune", {"current_cell": {"id": "cell_0_0"}}, candidate_count=1
+    )
+
+    assert result == fixture
+    assert generator.last_result is not None
+    assert client.calls[0]["role"] == Role.ADJUDICATOR
+    assert client.calls[0]["output_model"] is CandidateGenerationResult
+    assert '"candidate_count":1' in client.calls[0]["user"]

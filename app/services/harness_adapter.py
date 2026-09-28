@@ -24,10 +24,12 @@ from app.domain.types import (
     SocialContext,
 )
 from app.harness.adjudicator import adjudicate as domain_adjudicate
+from app.harness.candidate_generator import ModelCandidateGenerator
 from app.harness.context_builder import ContextView, build_context as domain_build_context
 from app.harness.context_policy import seed_context_policy, select_action_class
 from app.harness.memory_retriever import retrieve
 from app.harness.model_client import ModelClient, ModelOutputError
+from app.harness.jev_scorer import OpenRouterJevScorer
 from app.harness.narrator import fallback_narration, narrate as domain_narrate
 from app.services.stubs import EngineResolution, NarrationResult, Proposal, WorldView
 
@@ -264,6 +266,8 @@ class ProductionHarness:
         self.client = client
         self.db = db
         self.policy = seed_context_policy()
+        self.candidate_generator = ModelCandidateGenerator(client)
+        self.jev_scorer = OpenRouterJevScorer()
 
     def context_budget(self) -> int:
         return int(self.policy.budget["max_context_tokens"])

@@ -635,7 +635,9 @@ function renderInspector(debug) {
   proposal.className = "inspector-json";
   proposal.textContent = debug.proposal
     ? JSON.stringify(debug.proposal, null, 2)
-    : "none — the fast path skipped the adjudicator";
+    : debug.path === "JEV_PIPELINE"
+      ? "none — JEV evaluated mutation bundles rather than a legacy proposal"
+      : "none — the deterministic fast path needed no model proposal";
   root.appendChild(proposal);
 
   inspectorSection(root, "Effects");

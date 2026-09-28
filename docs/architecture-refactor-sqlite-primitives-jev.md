@@ -1,110 +1,253 @@
-# Many-Lives Architecture Refactor: SQLite Migration, Mutation Primitives, and Jev Pipeline
+# Many-Lives Architecture Refactor: SQLite, Mutation Bundles, and JEV
 
-**Status**: Planning & Pre-Implementation  
-**Date**: September 2026  
-**Authors**: Architecture Post-Mortem & Refactor Summary
+**Status:** Implemented and verified
 
----
+**Date:** September 2026
 
-## 1. Executive Summary & Motivation
+**Purpose:** Architecture record and implementation post-mortem
 
-Many-Lives was originally built during a timeboxed hackathon sprint using MongoDB Atlas and a single-model LLM adjudication pipeline (`gemini-2.5-flash-lite`). While the core invariant (*models propose, deterministic code decides*) held, two major architectural friction points emerged:
+## 1. Executive summary
 
-1. **Persistence & Operational Overhead**: Cloud-hosted MongoDB Atlas introduced multi-document replica set transaction complexity, external network roundtrips (30–100ms per turn), connection timeouts, and debugging friction for a compact, local turn-based game.
-2. **Action Rigidity vs. Hallucination**: A strict verb whitelist (`MOVE`, `ATTACK`, `TAKE`, `DROP`, `EQUIP`, `INTERACT`, `TALK`) caused frequent `"Unsupported action"` rejections on expressive player inputs. Conversely, unconstrained LLM writes would violate game state integrity.
+Many-Lives now uses an embedded SQLite persistence layer and a two-route action pipeline:
 
-This refactor replaces MongoDB with **local SQLite in WAL mode** and transitions the domain engine from hardcoded verb handlers to **generic state mutation primitives** scored by **TypeSafe Jev (System 1 judgment)** and sampled via **deterministic weighted RNG**.
+- Structurally obvious commands use deterministic parsing and the established rules engine.
+- Free-form commands use multi-candidate mutation generation, deterministic filtering, JEV semantic scoring, and seeded selection.
 
----
+Both routes converge on a shared mutation-application boundary before canonical state is committed. Models may propose candidate outcomes, but they cannot write the database, supply authoritative commit metadata, bypass version checks, or use application-only mutation operations.
 
-## 2. Core Architectural Changes
+The refactor also split world-generation configuration from runtime rules and added persistent physical and mental character conditions while preserving the semantic distinction between NPCs, enemies, and bosses.
 
-### A. Persistence: MongoDB Atlas $\to$ SQLite (WAL Mode)
-- **Local Embedded Database**: Replaces PyMongo/Atlas with standard Python SQLite (`sqlite3` / `aiosqlite`) storing campaign state in `dungeon.db`.
-- **Hybrid Schema with JSON**: Tables for `campaigns`, `cells`, `entities`, `events`, `turns`, and `memories` use structured primary keys with JSON columns for nested feature trees and event payloads.
-- **Zero-Network Atomic Transactions**: Multi-table state mutations execute in $<1\text{ ms}$ inside atomic `with transaction(conn):` blocks.
-- **Zero-I/O In-Memory Testing**: Test suite runs against `:memory:` SQLite, enabling 100% offline, deterministic CI runs.
-- **Local DB Logging**: Structured SQL execution and transaction logging to `logs/db.log`.
+Final verification after integration:
 
-### B. Domain Engine: Verb Whitelists $\to$ Atomic Mutation Primitives
-Instead of anticipating every verb a player might type, the domain engine implements a closed set of 4 algebraic state mutation primitives:
-1. `MutateAttribute(target_id: str, path: str, value: Any)` (e.g. modify HP, change feature state like `light_state = "lit"`, update condition)
-2. `TransferEntity(entity_id: str, from_ref: str, to_ref: str, kind: LocationKind)` (e.g. move item from chest to inventory)
-3. `MoveEntity(entity_id: str, target_cell_id: str)` (e.g. player movement)
-4. `AppendEvent(event_type: str, payload: dict, summary: str)` (e.g. log combat rolls, dialogue, state changes)
+- 540 tests passed.
+- The run included 14 Playwright browser tests, all integration tests, probes, and unit tests.
+- Tests ran with fake model components and required no external database or model credentials.
 
-The engine validates physical and spatial invariants (target presence in room, non-negative HP, valid feature properties) and applies the mutations.
+## 2. Architectural invariants
 
-### C. Adjudication: Multi-Candidate Generator + Jev Semantic Scoring
-To resolve free-form player creativity without brittle regex or hallucinated stats:
+The central invariant remains unchanged:
 
+> Models interpret and propose; deterministic application code alone establishes canonical state.
+
+The implementation preserves this through the following rules:
+
+1. Models receive scoped world context but no database-write capability.
+2. Model-originated mutation bundles use a closed, validated vocabulary.
+3. Entity references, accessible cells, attribute paths, condition values, and protected fields are checked deterministically.
+4. Campaign scope, document versions, turn identity, event IDs, event ordering, and commit metadata are application-owned.
+5. Consequential changes and their events commit atomically.
+6. Duplicate turn IDs replay stored results rather than applying mutations twice.
+7. Every persistence query, including history and memory access, remains scoped by `campaign_id`.
+
+## 3. SQLite persistence
+
+### 3.1 Why SQLite
+
+MongoDB Atlas added network dependency, connection setup, transaction complexity, and debugging overhead to a compact local turn-based world. SQLite provides local durability, atomic multi-table transactions, and fast isolated tests without changing the domain’s repository contracts.
+
+### 3.2 Storage model
+
+`app/persistence/sqlite.py` implements a narrow document-store adapter over ordinary SQLite tables. Canonical documents remain JSON-shaped while commonly queried fields are also stored in indexed columns.
+
+The persisted areas include campaigns, cells, entities, events, turns, memories, quests, policies, evaluations, and visual metadata used by later features.
+
+Indexes support campaign, cell, entity, location, event-order, turn, and memory lookups. `app/persistence/repositories.py` retains campaign-scoped repository operations and reconstructs immutable world views without leaking SQLite behavior into `domain/`.
+
+### 3.3 Transactions and concurrency
+
+The SQLite layer provides:
+
+- atomic transaction and nested-savepoint handling;
+- optimistic document-version checks;
+- atomic turn mutation, insertion, event, and campaign-counter updates;
+- durable turn reservation and replay for idempotency;
+- `:memory:` databases for tests;
+- local diagnostics in `logs/db.log`.
+
+File-backed databases use SQLite WAL configuration. Tests use isolated in-memory databases and require no persistence service.
+
+### 3.4 Configuration
+
+Persistence is configured with `SQLITE_DB_PATH`; the application defaults to a local `dungeon.db` file.
+
+## 4. Action routing
+
+### 4.1 Deterministic fast path
+
+Recognized commands such as movement, observation, explicit inventory operations, and direct combat commands do not need semantic candidate selection.
+
+```text
+player input
+    -> deterministic parser
+    -> ActionIntent
+    -> deterministic rules engine
+    -> accepted Resolution
+    -> deterministic MutationBundle adapter
+    -> mutation application
+    -> atomic SQLite commit
 ```
-[Player Free-Form Input: "kick dirt in the goblin's eyes"]
-                          │
-                          ▼
-        [Stage 1: Multi-Candidate Generator (LLM)]
-   Generates N=3-5 diverse candidate interpretations:
-   - Candidate A (Distract): MutateAttribute(goblin, "status", "distracted") + Narration A
-   - Candidate B (Attack):   MutateAttribute(goblin, "hp", hp - 2) + Narration B
-   - Candidate C (Invalid):  MutateAttribute(torch, "light_state", "unlit") + Narration C
-                          │
-                          ▼
-        [Stage 2: Deterministic Schema Filter (0ms)]
-   Discards physically impossible candidates (e.g. Candidate C: no torch in cell)
-                          │
-                          ▼
-        [Stage 3: Jev Semantic Scoring (~50ms)]
-   Calls Jev System One (`jev_noul` / calibrated scoring):
-   - Evaluates surviving candidates against Room Environment, Player Stats, and `runtime_rules.yaml`
-   - Assigns calibrated probability weights: P(A) = 0.75, P(B) = 0.25
-                          │
-                          ▼
-        [Stage 4: Seeded Weighted RNG Selection]
-   Deterministically samples winning candidate (Candidate A)
-                          │
-                          ▼
-        [Stage 5: Atomic SQLite Commit & Narration Output]
-   Applies winning mutation bundle, logs trace to `logs/turn_traces.jsonl`, and returns Narration A
+
+The rules engine remains responsible for all authoritative calculations and compound consequences, including:
+
+- topology and boss-door checks;
+- destination selection and discovery;
+- combat rolls, damage, death, and environmental responses;
+- XP, level progression, counters, and disposition;
+- inventory capacity, stacking, equipment, consumption, and item insertion;
+- feature changes, key submission, treasure, and campaign completion.
+
+The adapter does not recalculate those outcomes. It losslessly converts the resulting canonical document mutations, inserts, and events into an application-owned bundle so deterministic and JEV turns share the application boundary.
+
+### 4.2 Free-form JEV pipeline
+
+Unrecognized or expressive input uses the candidate pipeline:
+
+```text
+free-form player input
+    -> build bounded campaign-scoped context
+    -> generate N candidate MutationBundles
+    -> deterministic schema and invariant filter
+    -> JEV semantic probability scoring
+    -> normalized weights
+    -> seeded TurnRng selection
+    -> mutation application
+    -> atomic SQLite commit
+    -> narration from committed state
 ```
 
-### D. Configuration Lifecycle Split
-Splits the monolithic `config/balance.yaml` into two distinct files:
-- **`config/world_gen.yaml`**: Run-once campaign setup (grid dimensions, key counts, boss distance, starting player stats).
-- **`config/runtime_rules.yaml`**: Per-turn execution tuning (base DCs, damage variance, disposition deltas, potion values) passed as lean calibration context to Jev.
+The default candidate count is read from `config/runtime_rules.yaml`. Candidate generation and scoring are replaceable seams with deterministic fakes used by tests.
 
----
+### 4.3 Why the fast path was restored
 
-## 3. Directory Impact Summary
+The initial merge routed every normal command through JEV. In offline tests, `FakeCandidateGenerator` produced valid but empty bundles, so a command such as `north` could be accepted and narrated without moving the player. The generated context also lacked enough authoritative topology information for a model to derive a destination safely.
 
-```
+The correction preserves deterministic interpretation for obvious commands while retaining JEV for ambiguity. This is both safer and cheaper, and it prevents model availability from controlling basic game mechanics.
+
+## 5. Mutation model and authorization boundary
+
+### 5.1 Model-facing primitives
+
+Model-generated candidates use a closed set of primitives:
+
+- `MutateAttribute` — permitted numeric, status, disposition, light, or condition changes;
+- `TransferEntity` — validated entity transfer between canonical locations;
+- `MoveEntity` — movement only to a destination present in the authorized snapshot;
+- `AppendEvent` — a proposed typed event payload and summary.
+
+The validator rejects missing or hallucinated entities, inaccessible cells, protected fields, unapproved paths, invalid condition operations, application-only mutation kinds, and model-supplied execution metadata.
+
+Model-facing paths such as `stats.hp` are mapped to the canonical repository shape, such as `character.hp`. Transfers and movement produce canonical `location` objects with `kind`, `ref_id`, and `slot`.
+
+### 5.2 Application-owned mutations
+
+Deterministic resolutions require a richer, lossless representation. Application-only bundle operations carry:
+
+- canonical document patches with set, increment, and add-to-set fields;
+- canonical document inserts;
+- fully formed typed events;
+- expected turn and campaign versions;
+- touched entity and cell IDs;
+- rejected effects and current-cell metadata.
+
+These operations cannot be submitted by model-originated bundles. The distinction lets deterministic rules express complex state transitions without granting equivalent authority to a model.
+
+### 5.3 Canonical schema compatibility
+
+Early primitive tests used simplified mock fields such as `stats.hp`, `location_kind`, and `location_id`. Repository-backed parity work corrected the executor to understand real entity IDs, cell IDs, nested character documents, and canonical location objects. The persistence schema was not changed to accommodate the mutation engine; the mutation engine was adapted to the established schema.
+
+## 6. Persistent character conditions and entity semantics
+
+### 6.1 Closed condition vocabularies
+
+Physical conditions are limited to `BLEEDING`, `POISONED`, `BLINDED`, `STUNNED`, `CRIPPLED`, `BURNING`, and `EXHAUSTED`.
+
+Mental conditions are limited to `CHARMED`, `FRIGHTENED`, `CONFUSED`, `ENRAGED`, and `TERRIFIED`.
+
+Condition mutations accept only single-value `ADD` or `REMOVE` operations. Model-proposed whole-list replacement is rejected. Application is idempotent and conditions retain deterministic ordering.
+
+Existing documents without condition fields remain compatible and project empty lists.
+
+### 6.2 NPC, enemy, and boss distinctions
+
+Harness projections preserve canonical `NPC`, `ENEMY`, and `BOSS` entity types. Hostile characters may receive dialogue or verbal-action attempts for narrative reactions, but they do not become friendly NPCs, receive NPC trust progression, offer friendly quests, or leak NPC-only facts.
+
+The API and UI expose entity types and active condition tags. Browser rendering continues to use safe text-node updates.
+
+## 7. Configuration lifecycle
+
+The former monolithic `config/balance.yaml` was intentionally split:
+
+- `config/world_gen.yaml` contains run-once campaign and room-generation settings, including grid dimensions, placement constraints, starting player values, generation tables, and dresser limits.
+- `config/runtime_rules.yaml` contains per-turn mechanics and calibration data, including combat, checks, inventory, disposition, conditions, context budget, and candidate-generation settings.
+
+Campaign creation reads world-generation configuration. Room planning composes the portions it needs from both files. Runtime/JEV components read runtime rules. Environment overrides are `WORLD_GEN_FILE` and `RUNTIME_RULES_FILE`.
+
+## 8. Observability
+
+### 8.1 Turn traces
+
+`logs/turn_traces.jsonl` records player input, generated candidates, filter results, semantic scores, normalized weights, the selected bundle, and final acceptance.
+
+### 8.2 Database diagnostics
+
+`logs/db.log` records SQLite transaction and touched-table diagnostics. Expected duplicate turn claims currently use exception-based control flow and may create noisy error entries even when replay behavior is correct.
+
+### 8.3 Inspector
+
+The browser inspector distinguishes `FAST` from `JEV_PIPELINE`, shows bounded-context manifests, accepted/rejected effects, persisted event IDs, narration verification, and recorded model calls. JEV uses bundles rather than the retired single adjudicator proposal.
+
+## 9. Code map
+
+```text
 app/
-├── domain/       ──> Refactored: Replaces rules.py verb whitelist with primitives.py executor & schema filter.
-├── persistence/  ──> Refactored: Replaces mongo.py with sqlite.py; updates repositories.py to SQLite + JSON.
-├── world/        ──> Updated: room_planner.py reads world_gen.yaml instead of monolithic balance config.
-├── harness/      ──> Refactored: adjudicator.py becomes multi-candidate generator; adds Jev semantic client.
-├── services/     ──> Refactored: turn_orchestrator.py runs Generate -> Filter -> Jev -> RNG -> Commit pipeline.
-├── api/          ──> Unchanged: HTTP routes and error envelopes remain identical.
-└── ui/           ──> Unchanged: Static frontend receives narrated turns and debug traces.
+├── config.py                         # SQLite and service settings
+├── domain/
+│   ├── rules.py                      # deterministic authoritative mechanics
+│   ├── mutations.py                  # model and application mutation types
+│   ├── mutation_validator.py         # authorization and application
+│   ├── mutation_adapter.py           # deterministic Resolution -> bundle
+│   └── picker.py                     # seeded weighted candidate selection
+├── persistence/
+│   ├── sqlite.py                     # connection, schema, transactions, adapter
+│   ├── repositories.py               # campaign-scoped persistence operations
+│   └── views.py                      # immutable canonical world views
+├── harness/
+│   ├── candidate_generator.py        # multi-candidate generation seam
+│   └── jev_scorer.py                 # semantic scoring seam
+├── services/
+│   ├── sqlite_engine.py              # domain/persistence integration
+│   ├── turn_orchestrator.py          # FAST versus JEV routing and lifecycle
+│   └── turn_trace_logger.py          # JSONL decision traces
+└── ui/static/                        # inspector and condition rendering
+
+config/
+├── world_gen.yaml
+└── runtime_rules.yaml
 ```
 
----
+## 10. Verification
 
-## 4. Observability & Debugging Enhancements
+The integrated architecture was verified with:
 
-1. **`logs/turn_traces.jsonl`**: Single append-only JSONL log containing the full turn decision trace:
-   - Raw player input.
-   - All generated candidate mutation bundles.
-   - Schema validator pass/fail diagnostics.
-   - Jev calibrated probability scores.
-   - RNG roll result and winning candidate selection.
-2. **`logs/db.log`**: Query execution, transaction timing, and connection event logs.
-3. **CLI Inspection Tools**: Enhanced `scripts/game_state.py` and `scripts/inspect_turns.py` reading directly from local SQLite.
+```bash
+uv sync --frozen --all-extras
+.venv/bin/python -m pytest
+```
 
----
+Result:
 
-## 5. Implementation Roadmap & Active Plans
+```text
+540 passed, 0 failed
+```
 
-- `.pi/plans.local/sqlite-persistence-migration.md` — Autonomous task: SQLite repository rewrite, WAL configuration, in-memory testing.
-- `.pi/plans.local/mutation-primitives-jev-pipeline.md` — Core domain refactor: mutation primitives, multi-candidate generator, Jev scoring, and weighted RNG execution.
+Coverage includes SQLite lifecycle and durability, campaign-scoped operations, movement, combat, inventory, discovery, invariants, duplicate turns, concurrent serialization, mutation authorization and parity, JEV generation/scoring/selection, narration failure after commit, and browser behavior.
 
-*(This document will be updated with post-implementation benchmarks and latency measurements once the migration is complete.)*
+One Starlette/AnyIO alias deprecation warning remains and does not affect behavior.
+
+## 11. Follow-up opportunities
+
+- Decompose the large JEV branch in `TurnOrchestrator._take_turn_locked` into focused pipeline functions.
+- Clarify type names for model proposal bundles versus authorized execution bundles.
+- Record candidate-generator and JEV-scorer calls in inspector model-call telemetry.
+- Reduce error-level logging for expected duplicate turn claims.
+- Add measured production latency and database-size benchmarks; the original planning estimates were not retained as verified facts.

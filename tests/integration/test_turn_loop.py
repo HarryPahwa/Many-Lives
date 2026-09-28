@@ -330,7 +330,7 @@ def test_prompt_injection_changes_no_state(client: TestClient, injection):
     assert result["outcome"]["events"] == []
 
 
-def test_free_text_goes_through_the_adjudicated_path(client: TestClient):
+def test_free_text_goes_through_the_jev_pipeline(client: TestClient):
     campaign_id = _create(client)
     turn_id = str(uuid.uuid4())
     _turn(client, campaign_id, "I search the rubble for a loose stone", turn_id=turn_id)
@@ -338,9 +338,9 @@ def test_free_text_goes_through_the_adjudicated_path(client: TestClient):
     debug = client.get(
         f"/api/campaigns/{campaign_id}/debug/context", params={"turn_id": turn_id}
     ).json()
-    assert debug["path"] == "ADJUDICATED"
-    assert debug["proposal"] is not None
-    # A proposal is data, never authority: no mutating effect was accepted.
+    assert debug["path"] == "JEV_PIPELINE"
+    assert debug["proposal"] is None
+    # Candidate bundles are data, never authority: the fake candidates are no-ops.
     assert debug["accepted_effect_types"] == []
 
 
@@ -488,18 +488,34 @@ def test_html_in_narration_is_returned_verbatim_not_executed(client: TestClient)
     assert result["narration"] == payload
 
 
-def test_adjudication_failure_records_a_machine_readable_reason_code(client: TestClient):
-    """§7.1.3 — REJECTED with reason ADJUDICATION_FAILED.
+def test_candidate_filter_failure_records_a_machine_readable_reason_code(client: TestClient):
+    """A JEV candidate rejected by the deterministic filter changes nothing.
 
     The player sees prose; the inspector must see the code.
     """
     from app.services import stubs
 
-    class NoProposal(stubs.StubHarness):
-        def adjudicate(self, text, context_text, view, action_class):
-            return None, []
+    from app.domain.mutations import MutateAttribute, MutationBundle
+    from app.harness.candidate_generator import CandidateGenerationResult, FakeCandidateGenerator
 
-    stubs.set_harness(NoProposal())
+    invalid = MutationBundle(
+        bundle_id="invalid",
+        action_description="Rewrite identity",
+        rationale="Invalid protected-field mutation",
+        draft_narration="Reality resists.",
+        mutations=[
+            MutateAttribute(target_id="player_1", path="campaign_id", value="other")
+        ],
+    )
+
+    class InvalidCandidateHarness(stubs.StubHarness):
+        def __init__(self):
+            super().__init__()
+            self.candidate_generator = FakeCandidateGenerator(
+                [CandidateGenerationResult(candidates=[invalid])]
+            )
+
+    stubs.set_harness(InvalidCandidateHarness())
     campaign_id = _create(client)
     turn_id = str(uuid.uuid4())
 
@@ -511,7 +527,7 @@ def test_adjudication_failure_records_a_machine_readable_reason_code(client: Tes
     debug = client.get(
         f"/api/campaigns/{campaign_id}/debug/context", params={"turn_id": turn_id}
     ).json()
-    assert debug["reason_code"] == "ADJUDICATION_FAILED"
+    assert debug["reason_code"] == "SCHEMA_FILTER_REJECTED"
     assert debug["status"] == "REJECTED"
     # And nothing was applied.
     assert client.get(f"/api/campaigns/{campaign_id}").json()["current_turn"] == (

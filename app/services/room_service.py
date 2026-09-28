@@ -18,7 +18,8 @@ from app.world.room_validation import validate_room_dressing
 
 
 DressRoom = Callable[[RoomPlan, tuple[str, ...]], RoomDressing]
-DEFAULT_BALANCE_FILE = Path(__file__).parents[2] / "config" / "balance.yaml"
+DEFAULT_WORLD_GEN_FILE = Path(__file__).parents[2] / "config" / "world_gen.yaml"
+DEFAULT_RUNTIME_RULES_FILE = Path(__file__).parents[2] / "config" / "runtime_rules.yaml"
 
 
 class RoomGenerationInProgress(RuntimeError):
@@ -35,9 +36,15 @@ class GeneratedRoom:
 
 
 def _load_balance() -> dict[str, Any]:
-    path = Path(os.getenv("BALANCE_FILE", str(DEFAULT_BALANCE_FILE)))
-    with path.open(encoding="utf-8") as stream:
-        return yaml.safe_load(stream)
+    world_path = Path(os.getenv("WORLD_GEN_FILE", str(DEFAULT_WORLD_GEN_FILE)))
+    runtime_path = Path(os.getenv("RUNTIME_RULES_FILE", str(DEFAULT_RUNTIME_RULES_FILE)))
+    with world_path.open(encoding="utf-8") as stream:
+        world_gen = yaml.safe_load(stream)
+    with runtime_path.open(encoding="utf-8") as stream:
+        runtime_rules = yaml.safe_load(stream)
+    if not isinstance(world_gen, dict) or not isinstance(runtime_rules, dict):
+        raise ValueError("World-generation and runtime-rules configurations must be mappings")
+    return {**world_gen, **runtime_rules}
 
 
 def generate_room(

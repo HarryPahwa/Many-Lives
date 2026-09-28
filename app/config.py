@@ -21,10 +21,13 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     model_dresser: str = ""
     model_adjudicator: str = ""
+    model_jev: str = "typesafe/jev-1.13"
     model_narrator: str = ""
     model_verifier: str = ""
     embedding_model: str = ""
     embedding_dims: int = 1536
+    jev_endpoint: str = "https://openrouter.ai/api/alpha/decisions"
+    jev_timeout_s: float = 10.0
 
     # Room visuals (optional feature; see docs/Room_Visuals_TDD.md).
     # Every one of these is inert while enable_room_visuals is false.
@@ -48,7 +51,8 @@ class Settings(BaseSettings):
     # Toggles
     use_fake_models: bool = True
     debug_endpoints: bool = False
-    balance_file: str = "config/balance.yaml"
+    world_gen_file: str = "config/world_gen.yaml"
+    runtime_rules_file: str = "config/runtime_rules.yaml"
 
     # Speech. Empty key means narration stays text-only.
     elevenlabs_api_key: str = ""

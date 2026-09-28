@@ -4,12 +4,16 @@ Prompts the generator LLM to produce N candidate interpretations for player inte
 each bundled with atomic state mutation primitives and draft narration.
 """
 
+import json
+from collections.abc import Sequence
 from typing import Any, Mapping, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 import yaml
 
 from app.domain.mutations import MutationBundle
 from app.domain.types import DomainModel
+from app.domain.types import Role
+from app.harness.model_client import ModelClient, StructuredResult
 
 
 class CandidateGenerationResult(DomainModel):
@@ -17,6 +21,14 @@ class CandidateGenerationResult(DomainModel):
         min_length=1,
         description="Ranked candidate outcome bundles for the player's action.",
     )
+
+
+def _plain_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_plain_json(item) for item in value]
+    return value
 
 
 def load_candidate_count(config_path: str = "config/runtime_rules.yaml") -> int:
@@ -104,3 +116,39 @@ class FakeCandidateGenerator:
                 for i in range(count)
             ]
         )
+
+
+class ModelCandidateGenerator:
+    """Generate candidate bundles with the configured OpenRouter chat model."""
+
+    def __init__(self, client: ModelClient) -> None:
+        self.client = client
+        self.last_result: StructuredResult[CandidateGenerationResult] | None = None
+
+    def generate_candidates(
+        self,
+        player_input: str,
+        world_snapshot: Mapping[str, Any],
+        candidate_count: int | None = None,
+    ) -> CandidateGenerationResult:
+        count = candidate_count or 3
+        system = GENERATOR_SYSTEM_PROMPT.format(candidate_count=count)
+        user = json.dumps(
+            {
+                "player_input": player_input,
+                "world_snapshot": _plain_json(world_snapshot),
+                "candidate_count": count,
+            },
+            separators=(",", ":"),
+            default=str,
+        )
+        self.last_result = self.client.structured(
+            Role.ADJUDICATOR,
+            system,
+            user,
+            CandidateGenerationResult,
+            temperature=0.7,
+            max_output_tokens=1800,
+            timeout_s=20.0,
+        )
+        return self.last_result.parsed

@@ -240,9 +240,9 @@ def test_the_inspector_is_collapsed_but_present_and_opens_with_data(page, live_s
     )
 
     inspector = page.text_content("#inspector")
-    assert "ADJUDICATED" in inspector, "the path taken"
+    assert "JEV_PIPELINE" in inspector, "the path taken"
     assert "player_1" in inspector, "entity ids in context"
-    assert "ADJUDICATOR" in inspector and "ms" in inspector, "model call latency"
+    assert "NARRATOR" in inspector and "ms" in inspector, "model call latency"
     assert "v1" in inspector, "policy version"
 
 

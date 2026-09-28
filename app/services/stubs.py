@@ -269,6 +269,9 @@ def supports_history(engine: object) -> bool:
 
 
 class HarnessPort(Protocol):
+    candidate_generator: Any
+    jev_scorer: Any
+
     """Developer B's seam (§27.1)."""
 
     def classify(self, text: str, view: WorldView) -> str: ...
@@ -1068,6 +1071,13 @@ class StubHarness:
 
     POLICY_VERSION = 1
     BUDGET_TOKENS = 3000
+
+    def __init__(self) -> None:
+        from app.harness.candidate_generator import FakeCandidateGenerator
+        from app.harness.jev_scorer import FakeJevScorer
+
+        self.candidate_generator = FakeCandidateGenerator()
+        self.jev_scorer = FakeJevScorer()
 
     def context_budget(self) -> int:
         return self.BUDGET_TOKENS

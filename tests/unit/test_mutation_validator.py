@@ -144,7 +144,11 @@ def test_apply_valid_mutation_bundle(sample_world):
     assert resolution.accepted is True
     assert len(resolution.mutations) == 1
     assert resolution.mutations[0].document_id == "dagger_1"
-    assert resolution.mutations[0].set_fields["location_kind"] == "INVENTORY"
+    assert resolution.mutations[0].set_fields["location"] == {
+        "kind": "INVENTORY",
+        "ref_id": "player_1",
+        "slot": None,
+    }
     assert len(resolution.events) == 1
     assert resolution.events[0].type == EventType.ITEM_TRANSFERRED
 

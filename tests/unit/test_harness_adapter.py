@@ -12,6 +12,8 @@ from app.domain.types import (
     Role,
 )
 from app.harness.model_client import FakeModelClient
+from app.harness.candidate_generator import ModelCandidateGenerator
+from app.harness.jev_scorer import OpenRouterJevScorer
 from app.services.harness_adapter import ProductionHarness
 from app.services.stubs import EngineResolution, StubEngine
 
@@ -73,6 +75,13 @@ def test_production_harness_marks_unavailable_vector_search_without_a_database()
 
     assert "VECTOR_UNAVAILABLE" in manifest.notes
     assert vector_search_ms is None
+
+
+def test_production_harness_wires_real_candidate_and_decisions_clients():
+    harness = ProductionHarness(client=_client())
+
+    assert isinstance(harness.candidate_generator, ModelCandidateGenerator)
+    assert isinstance(harness.jev_scorer, OpenRouterJevScorer)
 
 
 def test_production_harness_uses_sqlite_events_without_persistence_metadata():

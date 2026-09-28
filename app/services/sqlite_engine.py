@@ -22,6 +22,8 @@ from app.api.schemas import (
     VisibleItem,
 )
 from app.domain.mutations import MutationBundle
+from app.domain.mutation_adapter import resolution_to_mutation_bundle
+from app.domain.mutation_validator import apply_mutation_bundle
 from app.domain.parser import parse_fast_path
 from app.domain.rules import DIRECTION_OFFSETS, Resolution, resolve_world_action
 from app.domain.types import ActionIntent
@@ -127,7 +129,11 @@ class SQLiteEngine:
             return EngineResolution(accepted=False, reason=str(exc))
 
         raw = resolve_world_action(action, snapshot, turn_id="pending")
-        return self._seam_resolution(raw, pending=(snapshot, action))
+        if not raw.accepted:
+            return self._seam_resolution(raw, pending=(snapshot, action))
+        bundle = resolution_to_mutation_bundle(raw, bundle_id="fast:pending")
+        compiled = apply_mutation_bundle(snapshot, bundle, turn_id="pending")
+        return self._seam_resolution(compiled, pending=(snapshot, action))
 
     def commit_turn(
         self, view: WorldView, resolution: EngineResolution, turn_id: str
@@ -140,8 +146,12 @@ class SQLiteEngine:
         snapshot, payload = pending
         if isinstance(payload, ActionIntent):
             raw = resolve_world_action(payload, snapshot, turn_id=turn_id)
+            if raw.accepted:
+                bundle = resolution_to_mutation_bundle(
+                    raw, bundle_id=f"fast:{turn_id}"
+                )
+                raw = apply_mutation_bundle(snapshot, bundle, turn_id=turn_id)
         elif isinstance(payload, MutationBundle):
-            from app.domain.mutation_validator import apply_mutation_bundle
             raw = apply_mutation_bundle(snapshot, payload, turn_id=turn_id)
         else:
             raise ValueError(f"Unknown payload type for commit: {type(payload)}")

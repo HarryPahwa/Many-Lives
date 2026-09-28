@@ -8,13 +8,16 @@ from typing import Any, Mapping, Sequence
 from pydantic import ValidationError
 
 from app.domain.mutations import (
+    AppendCanonicalEvent,
     AppendEvent,
+    ApplyDocumentMutation,
+    InsertDocument,
     MoveEntity,
     MutateAttribute,
     MutationBundle,
     TransferEntity,
 )
-from app.domain.rules import DocumentMutation, Resolution, WorldSnapshot
+from app.domain.rules import DocumentInsert, DocumentMutation, Resolution, WorldSnapshot
 from app.domain.types import (
     Event,
     EventType,
@@ -59,25 +62,29 @@ PROTECTED_PATHS: frozenset[str] = frozenset(
 
 
 def _get_entity_by_id(world: WorldSnapshot, entity_id: str) -> Mapping[str, Any] | None:
-    if world.player.get("id") == entity_id:
+    if _document_id(world.player) == entity_id:
         return world.player
     for c in world.characters:
-        if c.get("id") == entity_id:
+        if _document_id(c) == entity_id:
             return c
     for item in world.items:
-        if item.get("id") == entity_id:
+        if _document_id(item) == entity_id:
             return item
     for item in world.container_items:
-        if item.get("id") == entity_id:
+        if _document_id(item) == entity_id:
             return item
     for item in world.owned_items:
-        if item.get("id") == entity_id:
+        if _document_id(item) == entity_id:
             return item
     return None
 
 
+def _document_id(document: Mapping[str, Any]) -> str | None:
+    return document.get("entity_id") or document.get("cell_id") or document.get("id")
+
+
 def _is_accessible_cell(world: WorldSnapshot, target_cell_id: str) -> bool:
-    current_cell_id = world.current_cell.get("id")
+    current_cell_id = _document_id(world.current_cell)
     if target_cell_id == current_cell_id:
         return True
     if world.destination_cell and world.destination_cell.get("id") == target_cell_id:
@@ -95,10 +102,20 @@ def validate_candidate_bundle(
     if not isinstance(bundle, MutationBundle):
         return False, "Bundle is not a valid MutationBundle instance"
 
-    player_id = world.player.get("id")
-    current_cell_id = world.current_cell.get("id")
+    if bundle.origin == "MODEL" and bundle.execution is not None:
+        return False, "Model bundles cannot supply execution metadata"
+
+    player_id = _document_id(world.player)
+    current_cell_id = _document_id(world.current_cell)
 
     for mutation in bundle.mutations:
+        if isinstance(
+            mutation, (ApplyDocumentMutation, InsertDocument, AppendCanonicalEvent)
+        ):
+            if bundle.origin != "DETERMINISTIC":
+                return False, f"Mutation kind '{mutation.kind}' is application-only"
+            continue
+
         if isinstance(mutation, MutateAttribute):
             if mutation.path in PROTECTED_PATHS or mutation.path.startswith("id"):
                 return False, f"Cannot mutate protected path '{mutation.path}'"
@@ -184,21 +201,50 @@ def apply_mutation_bundle(
         )
 
     doc_mutations: list[DocumentMutation] = []
+    canonical_inserts: list[DocumentInsert] = []
     events: list[Event] = []
     touched_entity_ids: set[str] = set()
-    touched_cell_ids: set[str] = {world.current_cell.get("id", "")}
+    current_cell_id = _document_id(world.current_cell) or ""
+    touched_cell_ids: set[str] = {current_cell_id}
 
-    campaign_id = world.campaign.get("id", "")
-    player_id = world.player.get("id", "")
-    current_turn = world.campaign.get("turn_count", 0)
+    campaign_id = world.campaign.get("_id") or world.campaign.get("id", "")
+    player_id = _document_id(world.player) or ""
+    current_turn = world.campaign.get("current_turn", world.campaign.get("turn_count", 0))
 
     for mutation in bundle.mutations:
-        if isinstance(mutation, MutateAttribute):
+        if isinstance(mutation, ApplyDocumentMutation):
+            doc_mutations.append(
+                DocumentMutation(
+                    collection=mutation.collection,
+                    document_id=mutation.document_id,
+                    expected_version=mutation.expected_version,
+                    set_fields=dict(mutation.set_fields),
+                    inc_fields=dict(mutation.inc_fields),
+                    add_to_set_fields=dict(mutation.add_to_set_fields),
+                )
+            )
+
+        elif isinstance(mutation, InsertDocument):
+            doc_mutations_for_insert = DocumentInsert(
+                collection=mutation.collection,
+                document=dict(mutation.document),
+            )
+            # Kept separate because repository commit applies inserts after patches.
+            # The list is initialized lazily below for compatibility with model bundles.
+            canonical_inserts.append(doc_mutations_for_insert)
+
+        elif isinstance(mutation, AppendCanonicalEvent):
+            events.append(mutation.event)
+
+        elif isinstance(mutation, MutateAttribute):
             target_id = mutation.target_id
             touched_entity_ids.add(target_id)
-            coll = "cells" if target_id == world.current_cell.get("id") else "entities"
+            coll = "cells" if target_id == current_cell_id else "entities"
             target_entity = _get_entity_by_id(world, target_id)
             target_version = target_entity.get("version", 0) if target_entity else 0
+            canonical_path = mutation.path
+            if mutation.path.startswith("stats.") and target_entity is not None:
+                canonical_path = f"character.{mutation.path.removeprefix('stats.')}"
 
             if mutation.op == "ADD" and isinstance(mutation.value, (int, float)):
                 doc_mutations.append(
@@ -206,7 +252,7 @@ def apply_mutation_bundle(
                         collection=coll,
                         document_id=target_id,
                         expected_version=target_version,
-                        inc_fields={mutation.path: int(mutation.value)},
+                        inc_fields={canonical_path: int(mutation.value)},
                     )
                 )
             elif mutation.path in {"physical_conditions", "mental_conditions"}:
@@ -237,7 +283,7 @@ def apply_mutation_bundle(
                         collection=coll,
                         document_id=target_id,
                         expected_version=target_version,
-                        set_fields={mutation.path: mutation.value},
+                        set_fields={canonical_path: mutation.value},
                     )
                 )
 
@@ -253,8 +299,11 @@ def apply_mutation_bundle(
                     document_id=entity_id,
                     expected_version=item_version,
                     set_fields={
-                        "location_kind": mutation.location_kind.value,
-                        "location_id": mutation.to_ref,
+                        "location": {
+                            "kind": mutation.location_kind.value,
+                            "ref_id": mutation.to_ref,
+                            "slot": None,
+                        },
                     },
                 )
             )
@@ -272,8 +321,11 @@ def apply_mutation_bundle(
                     document_id=entity_id,
                     expected_version=version,
                     set_fields={
-                        "location_kind": LocationKind.CELL.value,
-                        "location_id": mutation.target_cell_id,
+                        "location": {
+                            "kind": LocationKind.CELL.value,
+                            "ref_id": mutation.target_cell_id,
+                            "slot": None,
+                        },
                     },
                 )
             )
@@ -290,21 +342,36 @@ def apply_mutation_bundle(
                     type=mutation.event_type,
                     actor_id=player_id,
                     entity_ids=list(touched_entity_ids),
-                    cell_id=world.current_cell.get("id", ""),
+                    cell_id=current_cell_id,
                     payload=mutation.payload,
                     summary=mutation.summary,
                     memory_status=MemoryStatus.NOT_REQUIRED,
                 )
             )
 
+    execution = bundle.execution
     return Resolution(
         accepted=True,
         reason=None,
         events=events,
         mutations=doc_mutations,
-        touched_entity_ids=list(touched_entity_ids),
-        touched_cell_ids=list(touched_cell_ids),
-        turn_id=turn_id,
-        current_cell_id=world.current_cell.get("id"),
+        inserts=canonical_inserts,
+        touched_entity_ids=(
+            list(execution.touched_entity_ids) if execution else list(touched_entity_ids)
+        ),
+        touched_cell_ids=(
+            list(execution.touched_cell_ids) if execution else list(touched_cell_ids)
+        ),
+        rejected_effects=list(execution.rejected_effects) if execution else [],
+        expected_turn=execution.expected_turn if execution else None,
+        expected_campaign_version=(
+            execution.expected_campaign_version if execution else None
+        ),
+        turn_id=(execution.turn_id if execution and execution.turn_id else turn_id),
+        current_cell_id=(
+            execution.current_cell_id
+            if execution and execution.current_cell_id
+            else current_cell_id
+        ),
         outcome_summary=bundle.draft_narration or bundle.action_description,
     )

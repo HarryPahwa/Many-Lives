@@ -10,7 +10,11 @@ from app.world.room_validation import RoomValidationError, validate_room_dressin
 from app.world.topology import generate_topology
 
 
-BALANCE = yaml.safe_load((Path(__file__).parents[2] / "config/balance.yaml").read_text())
+CONFIG_DIR = Path(__file__).parents[2] / "config"
+BALANCE = {
+    **yaml.safe_load((CONFIG_DIR / "world_gen.yaml").read_text()),
+    **yaml.safe_load((CONFIG_DIR / "runtime_rules.yaml").read_text()),
+}
 
 
 def planned_room():

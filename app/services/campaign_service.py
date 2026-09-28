@@ -20,7 +20,7 @@ from app.world.topology import generate_topology, parse_cell_key
 
 
 CAMPAIGN_ID_PATTERN = re.compile(r"^cmp_[a-z0-9]{12}$")
-DEFAULT_BALANCE_FILE = Path(__file__).parents[2] / "config" / "balance.yaml"
+DEFAULT_WORLD_GEN_FILE = Path(__file__).parents[2] / "config" / "world_gen.yaml"
 
 
 @dataclass(frozen=True)
@@ -38,11 +38,11 @@ def _new_campaign_id() -> str:
 
 
 def _load_balance() -> dict[str, Any]:
-    path = Path(os.getenv("BALANCE_FILE", str(DEFAULT_BALANCE_FILE)))
+    path = Path(os.getenv("WORLD_GEN_FILE", str(DEFAULT_WORLD_GEN_FILE)))
     with path.open(encoding="utf-8") as stream:
         balance = yaml.safe_load(stream)
     if not isinstance(balance, dict):
-        raise ValueError("Balance configuration must be a mapping")
+        raise ValueError("World-generation configuration must be a mapping")
     return balance
 
 

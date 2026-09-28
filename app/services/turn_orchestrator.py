@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 from app.api.schemas import (
     ContextManifest,
+    ModelCall,
     Outcome,
     ResumeResult,
     TurnRequest,
@@ -42,8 +43,9 @@ from app.domain.mutation_validator import apply_mutation_bundle, validate_candid
 from app.domain.picker import select_winning_candidate
 from app.domain.rng import TurnRng
 from app.domain.rules import Resolution
-from app.harness.candidate_generator import CandidateGenerator, FakeCandidateGenerator, load_candidate_count
-from app.harness.jev_scorer import FakeJevScorer, JevScorer
+from app.harness.candidate_generator import load_candidate_count
+from app.harness.jev_scorer import JevScoringError, load_runtime_rules
+from app.harness.model_client import ModelOutputError
 from app.services.turn_trace_logger import log_turn_trace
 
 logger = logging.getLogger("many_lives.turn")
@@ -169,7 +171,10 @@ class TurnOrchestrator:
         )
         engine.put_turn(record)
 
-        # 2/3. Candidate generation -> Validation -> Jev Scoring -> RNG Selection -> Atomic Commit
+        # 2/3. Preserve deterministic commands; use the JEV pipeline only
+        # for input that the structural parser cannot interpret.
+        intent = engine.parse_fast_path(request.input, request.player_id)
+        jev_bundle: MutationBundle | None = None
         manifest: ContextManifest | None = None
 
         from app.config import get_settings
@@ -206,6 +211,11 @@ class TurnOrchestrator:
                 resolution = engine.resolve(view, intent)
             else:
                 resolution = EngineResolution(accepted=False, reason="Invalid fast debug syntax")
+        elif intent is not None:
+            record.path = "FAST"
+            if intent.action_type in _SOCIAL_ACTIONS:
+                intent.params.setdefault("utterance", request.input[:300])
+            resolution = engine.resolve(view, intent)
         else:
             record.path = "JEV_PIPELINE"
             action_class = harness.classify(request.input, view)
@@ -240,12 +250,34 @@ class TurnOrchestrator:
 
             # Step A: Candidate Generation
             candidate_count = load_candidate_count()
-            generator = getattr(harness, "candidate_generator", FakeCandidateGenerator())
-            generation_res = generator.generate_candidates(
-                request.input,
-                {"player": snapshot.player, "current_cell": snapshot.current_cell, "characters": list(snapshot.characters), "items": list(snapshot.items)},
-                candidate_count=candidate_count,
-            )
+            try:
+                generation_res = harness.candidate_generator.generate_candidates(
+                    request.input,
+                    {"player": snapshot.player, "current_cell": snapshot.current_cell, "characters": list(snapshot.characters), "items": list(snapshot.items)},
+                    candidate_count=candidate_count,
+                )
+            except ModelOutputError:
+                logger.warning("candidate generation failed", exc_info=True)
+                resolution = EngineResolution(
+                    accepted=False,
+                    reason="No safe action candidates could be generated.",
+                )
+                return self._finish_rejected(
+                    view, record, resolution, "CANDIDATE_GENERATION_FAILED", manifest
+                )
+            generation_call = getattr(harness.candidate_generator, "last_result", None)
+            if generation_call is not None:
+                record.model_calls.append(
+                    ModelCall(
+                        role="CANDIDATE_GENERATOR",
+                        model=generation_call.model,
+                        input_tokens=generation_call.usage.get("input_tokens", 0),
+                        output_tokens=generation_call.usage.get("output_tokens", 0),
+                        latency_ms=generation_call.latency_ms,
+                        attempts=generation_call.attempts,
+                        schema_valid=True,
+                    ).model_dump()
+                )
 
             generated_candidates = generation_res.candidates
             filter_results: list[dict[str, Any]] = []
@@ -279,12 +311,36 @@ class TurnOrchestrator:
                 return self._finish_rejected(view, record, resolution, "SCHEMA_FILTER_REJECTED", manifest)
 
             # Step B: Jev Semantic Scoring
-            scorer = getattr(harness, "jev_scorer", FakeJevScorer())
-            scoring_res = scorer.score_candidates(
-                request.input,
-                surviving_candidates,
-                {"player": snapshot.player, "current_cell": snapshot.current_cell, "characters": list(snapshot.characters)},
-            )
+            try:
+                scoring_res = harness.jev_scorer.score_candidates(
+                    request.input,
+                    surviving_candidates,
+                    {"player": snapshot.player, "current_cell": snapshot.current_cell, "characters": list(snapshot.characters)},
+                    runtime_rules=load_runtime_rules(),
+                )
+            except JevScoringError:
+                logger.warning("JEV scoring failed", exc_info=True)
+                resolution = EngineResolution(
+                    accepted=False,
+                    reason="The action could not be judged safely.",
+                )
+                return self._finish_rejected(
+                    view, record, resolution, "JEV_SCORING_FAILED", manifest
+                )
+            jev_latency = getattr(harness.jev_scorer, "last_latency_ms", None)
+            if jev_latency is not None:
+                jev_usage = getattr(harness.jev_scorer, "last_usage", {})
+                record.model_calls.append(
+                    ModelCall(
+                        role="JEV",
+                        model=getattr(getattr(harness.jev_scorer, "settings", None), "model_jev", "typesafe/jev"),
+                        input_tokens=int(jev_usage.get("input_tokens", 0) or 0),
+                        output_tokens=int(jev_usage.get("output_tokens", 0) or 0),
+                        latency_ms=jev_latency,
+                        attempts=1,
+                        schema_valid=True,
+                    ).model_dump()
+                )
             normalized_weights = scoring_res.normalized_weights()
 
             # Step C: Weighted RNG Selection
@@ -296,6 +352,7 @@ class TurnOrchestrator:
                     campaign_seed = hash(campaign_seed)
             turn_rng = TurnRng(campaign_seed or 42, view.current_turn)
             winning_bundle = select_winning_candidate(surviving_candidates, normalized_weights, turn_rng)
+            jev_bundle = winning_bundle
 
             # Step D: Apply Winning Mutation Bundle
             if hasattr(engine, "resolve_mutation_bundle"):
@@ -335,7 +392,14 @@ class TurnOrchestrator:
         except ConcurrencyConflict:
             # §7.1.5: reload and re-resolve once, then surface 409.
             view = engine.load_world_view(campaign_id, request.player_id)
-            resolution = engine.resolve(view, intent)
+            if jev_bundle is not None and hasattr(engine, "resolve_mutation_bundle"):
+                resolution = engine.resolve_mutation_bundle(
+                    view, jev_bundle, turn_id=request.turn_id
+                )
+            elif intent is not None:
+                resolution = engine.resolve(view, intent)
+            else:
+                raise
             if not resolution.accepted:
                 return self._finish_rejected(view, record, resolution, "REJECTED", manifest)
             commit = engine.commit_turn(view, resolution, request.turn_id)

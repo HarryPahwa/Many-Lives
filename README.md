@@ -60,9 +60,9 @@ STUB_STATE_FILE=.state/demo.json DEBUG_ENDPOINTS=true uvicorn app.main:app
 
 Open **http://127.0.0.1:8000** and click *New campaign*.
 
-Nothing above needs credentials. Without `OPENROUTER_API_KEY` the app runs on
-the in-memory seam with canned narration, and every test that would need Atlas
-skips with a reason rather than failing.
+Nothing above needs credentials. With `USE_FAKE_MODELS=true`, the app uses
+deterministic fake candidate generation, JEV scoring, and narration while
+retaining SQLite as canonical persistence.
 
 ### Why there is a run script
 
@@ -88,10 +88,12 @@ The settings that change which code actually runs:
 
 | Variable | Effect |
 |---|---|
-| `USE_FAKE_MODELS` | `false` switches on the real harness — Developer B's context builder, adjudicator and narrator. `true` gives canned narration and an adjudicator that only ever proposes `LOOK`. |
+| `USE_FAKE_MODELS` | `false` enables the production candidate generator, OpenRouter JEV Decisions client, and narrator. `true` uses deterministic local fakes. |
 | `DEBUG_ENDPOINTS` | `true` enables the context inspector. With `false`, `/debug/context` returns 404 by design (§22) and the UI hides the panel. |
-| `MONGODB_URI` | When set, the Atlas engine and Atlas-backed memory are used. Unset, the file or in-memory engine is used. |
-| `STUB_STATE_FILE` | Durable JSON world state. **Must be a real environment variable**, not a `.env` entry. |
+| `SQLITE_DB_PATH` | Canonical SQLite database path; tests override it with isolated temporary databases. |
+| `MODEL_JEV` | Decisions API model, default `typesafe/jev-1.13`. |
+| `JEV_ENDPOINT` | OpenRouter Decisions endpoint, default `https://openrouter.ai/api/alpha/decisions`. |
+| `STUB_STATE_FILE` | Optional legacy JSON compatibility seam. **Must be a real environment variable**, not a `.env` entry. |
 | `ENABLE_ROOM_VISUALS` | The room illustrations. See below. |
 | `ELEVENLABS_API_KEY` | Optional spoken narration. Blank keeps narration text-only. |
 
@@ -101,14 +103,15 @@ provider:
 ```
 MODEL_DRESSER=google/gemini-2.5-flash-lite
 MODEL_ADJUDICATOR=google/gemini-2.5-flash-lite
+MODEL_JEV=typesafe/jev-1.13
 MODEL_NARRATOR=google/gemini-2.5-flash-lite
 MODEL_VERIFIER=google/gemini-2.5-flash-lite
 EMBEDDING_MODEL=perplexity/pplx-embed-v1-0.6b
 EMBEDDING_DIMS=1024      # confirmed: this model returns 1024 dimensions
 ```
 
-`EMBEDDING_DIMS` must match the dimension the Atlas vector index was created
-with. A mismatch fails at query time, not at startup.
+`EMBEDDING_DIMS` must match the configured embedding model. A mismatch fails
+when stored and query vectors are compared.
 
 ## Room visuals (optional)
 
@@ -194,6 +197,15 @@ Tests never call a real provider. `tests/conftest.py` pins them to fakes even
 when `.env` is configured for a live demo — without it, a `.env` carrying
 `USE_FAKE_MODELS=false` turned a 17-second suite into six minutes of billed
 calls. `ALLOW_REAL_MODELS_IN_TESTS=1` is the deliberate escape hatch.
+
+To verify the separate OpenRouter JEV Decisions API integration explicitly,
+configure `OPENROUTER_API_KEY` and run:
+
+```bash
+uv run python scripts/smoke_jev.py
+```
+
+This is opt-in and billable. Normal tests never execute it.
 
 ### Persistence across a restart
 
@@ -291,7 +303,7 @@ app/
   services/     # campaign / room services, turn orchestrator (integration seam)
   api/          # C — FastAPI routers and schemas
   ui/static/    # C — plain HTML/CSS/JS
-config/         # balance.yaml (tuning constants)
+config/         # world-generation and runtime-rule tuning constants
 scripts/        # indexes, stress history, probe suite, scripted play
 tests/          # unit / integration / probes
 ```
