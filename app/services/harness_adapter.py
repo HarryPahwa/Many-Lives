@@ -117,14 +117,43 @@ class _WorldViewContext(ContextView):
             {"entity_id": item.id, "name": item.name, "entity_type": "ITEM", "where": item.where}
             for item in cell.items
         ]
-        entities = [*characters, *features, *items]
+        campaign_id = str(campaign.get("campaign_id") or campaign.get("_id") or "")
+        player_id = str(player.get("entity_id") or self.world_view.player_id)
+        owned_items: list[dict[str, Any]] = []
+        if self.db is not None and campaign_id:
+            owner_ids = [player_id, *(character["entity_id"] for character in characters)]
+            owned_items = list(
+                self.db.entities.find(
+                    {
+                        "campaign_id": campaign_id,
+                        "entity_type": "ITEM",
+                        "location.kind": {"$in": ["INVENTORY", "EQUIPPED"]},
+                        "location.ref_id": {"$in": owner_ids},
+                    }
+                ).sort("entity_id", 1)
+            )
+        player_inventory = [
+            item for item in owned_items
+            if item.get("location", {}).get("ref_id") == player_id
+        ]
+        inventories_by_character = {
+            character["entity_id"]: [
+                item for item in owned_items
+                if item.get("location", {}).get("ref_id") == character["entity_id"]
+            ]
+            for character in characters
+        }
+        for character in characters:
+            character["inventory"] = inventories_by_character[character["entity_id"]]
+
+        entities = [*characters, *features, *items, *owned_items]
         target = next(
             (entity for entity in entities if entity["entity_id"] in target_ids),
             {},
         )
         return {
             "player_state": self.world_view.player.model_dump(),
-            "player_inventory": [],
+            "player_inventory": player_inventory,
             "current_cell": cell.model_dump(),
             "visible_entities": [*characters, *features, *items],
             "target_state": target,
@@ -178,6 +207,7 @@ def _model_call(record) -> ModelCall:
         latency_ms=record.latency_ms,
         attempts=record.attempts,
         schema_valid=record.schema_valid,
+        retry_errors=record.retry_errors,
     )
 
 
@@ -231,6 +261,8 @@ def _social_context(view: WorldView, events: list[Event] | None) -> SocialContex
             npc_id = npc_id or str(payload["npc_id"])
             if payload.get("utterance"):
                 utterances.append(str(payload["utterance"]))
+            elif payload.get("dialogue_intent"):
+                utterances.append(f"Intent: {payload['dialogue_intent']}")
         elif event.type == EventType.FACT_REVEALED:
             revealed = event.summary
     if npc_id is None:

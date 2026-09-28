@@ -3,8 +3,15 @@ from app.domain.types import EventType
 from app.harness.candidate_generator import (
     CandidateGenerationResult,
     FakeCandidateGenerator,
+    ModelCandidateGenerationResult,
+    ModelMutationBundle,
     ModelCandidateGenerator,
+    ModelAppendEvent,
+    DialogueEventPayload,
+    CombatEventPayload,
     load_candidate_count,
+    load_candidate_max_output_tokens,
+    load_candidate_validation_retries,
 )
 from app.domain.types import Role
 from app.harness.model_client import FakeModelClient
@@ -12,7 +19,9 @@ from app.harness.model_client import FakeModelClient
 
 def test_load_candidate_count_from_yaml():
     count = load_candidate_count("config/runtime_rules.yaml")
-    assert count == 3
+    assert count == 10
+    assert load_candidate_max_output_tokens("config/runtime_rules.yaml") == 6000
+    assert load_candidate_validation_retries("config/runtime_rules.yaml") == 1
 
 
 def test_candidate_generation_with_condition_mutations():
@@ -78,9 +87,9 @@ def test_fake_candidate_generator_predefined():
 
 
 def test_model_candidate_generator_uses_structured_adjudicator_call():
-    fixture = CandidateGenerationResult(
+    fixture = ModelCandidateGenerationResult(
         candidates=[
-            MutationBundle(
+            ModelMutationBundle(
                 bundle_id="generated_1",
                 action_description="Inspect the rune",
                 rationale="The rune is visible",
@@ -96,8 +105,90 @@ def test_model_candidate_generator_uses_structured_adjudicator_call():
         "inspect rune", {"current_cell": {"id": "cell_0_0"}}, candidate_count=1
     )
 
-    assert result == fixture
+    assert result.candidates[0].bundle_id == fixture.candidates[0].bundle_id
+    assert result.candidates[0].execution is None
+    assert result.candidates[0].origin == "MODEL"
     assert generator.last_result is not None
     assert client.calls[0]["role"] == Role.ADJUDICATOR
-    assert client.calls[0]["output_model"] is CandidateGenerationResult
+    assert client.calls[0]["output_model"] is ModelCandidateGenerationResult
     assert '"candidate_count":1' in client.calls[0]["user"]
+
+
+def test_model_dialogue_payload_survives_conversion_to_canonical_proposal():
+    fixture = ModelCandidateGenerationResult(
+        candidates=[
+            ModelMutationBundle(
+                bundle_id="talk_1",
+                action_description="Open a conversation with the keeper",
+                rationale="The keeper is present.",
+                draft_narration="The keeper turns to hear you.",
+                mutations=[
+                    ModelAppendEvent(
+                        event_type=EventType.DIALOGUE,
+                        payload=DialogueEventPayload(
+                            npc_id="keeper_1",
+                            utterance=None,
+                            dialogue_intent="INITIATE_CONVERSATION",
+                            npc_reaction="ACKNOWLEDGE",
+                        ),
+                        summary="Player approaches the keeper to talk.",
+                    )
+                ],
+            )
+        ]
+    )
+    generator = ModelCandidateGenerator(
+        FakeModelClient(fixtures={(Role.ADJUDICATOR, "default"): fixture})
+    )
+
+    result = generator.generate_candidates("talk to the keeper", {}, candidate_count=1)
+
+    event = result.candidates[0].mutations[0]
+    assert isinstance(event, AppendEvent)
+    assert event.payload == {
+        "npc_id": "keeper_1",
+        "dialogue_intent": "INITIATE_CONVERSATION",
+        "npc_reaction": "ACKNOWLEDGE",
+    }
+
+
+def test_combat_hp_delta_derives_event_damage_and_canonical_mutation():
+    fixture = ModelCandidateGenerationResult(
+        candidates=[
+            ModelMutationBundle(
+                bundle_id="hit_1",
+                action_description="Strike the goblin",
+                rationale="The attack connects.",
+                draft_narration="Your weapon hits the goblin.",
+                mutations=[
+                    ModelAppendEvent(
+                        event_type=EventType.ATTACK_RESOLVED,
+                        payload=CombatEventPayload(
+                            target_id="goblin_1", outcome="HIT", hp_delta=-6
+                        ),
+                        summary="Player hits the goblin for 6 damage.",
+                    ),
+                    # A malformed duplicate from the model must not override the
+                    # typed combat payload.
+                    MutateAttribute(
+                        target_id="goblin_1",
+                        path="stats.hp",
+                        value="ADD",
+                        op="ADD",
+                    ),
+                ],
+            )
+        ]
+    )
+    generator = ModelCandidateGenerator(
+        FakeModelClient(fixtures={(Role.ADJUDICATOR, "default"): fixture})
+    )
+
+    result = generator.generate_candidates("attack goblin", {}, candidate_count=1)
+
+    event, hp_change = result.candidates[0].mutations
+    assert isinstance(event, AppendEvent)
+    assert event.payload == {"target_id": "goblin_1", "outcome": "HIT", "damage": 6}
+    assert isinstance(hp_change, MutateAttribute)
+    assert hp_change.value == -6
+    assert hp_change.op == "ADD"

@@ -55,7 +55,16 @@ def strict_schema(model: type[BaseModel]) -> dict[str, Any]:
             return value
 
         if "$ref" in value:
-            if len(value) != 1:
+            # Pydantic may attach annotations such as ``default`` or ``title``
+            # beside a reference.  Those keywords are stripped everywhere
+            # else, so discard them before deciding whether the reference has
+            # meaningful siblings that cannot safely be inlined.
+            siblings = {
+                key: item
+                for key, item in value.items()
+                if key != "$ref" and key not in _REMOVED_KEYWORDS
+            }
+            if siblings:
                 raise SchemaReferenceError("Referenced schemas cannot have sibling keywords")
             return resolve_reference(value["$ref"], seen)
 

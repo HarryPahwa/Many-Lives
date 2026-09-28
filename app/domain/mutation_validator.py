@@ -4,6 +4,7 @@ Validates candidate MutationBundles against world state snapshots and transforms
 valid bundles into database DocumentMutations, DocumentInserts, and Events.
 """
 
+import math
 from typing import Any, Mapping, Sequence
 from pydantic import ValidationError
 
@@ -49,6 +50,10 @@ ALLOWED_MUTATION_PATHS: frozenset[str] = frozenset(
     }
 )
 
+NUMERIC_MUTATION_PATHS: frozenset[str] = frozenset(
+    path for path in ALLOWED_MUTATION_PATHS if path.startswith("stats.")
+)
+
 PROTECTED_PATHS: frozenset[str] = frozenset(
     {
         "id",
@@ -59,6 +64,51 @@ PROTECTED_PATHS: frozenset[str] = frozenset(
         "version",
     }
 )
+
+
+def _coalesce_document_mutations(
+    mutations: Sequence[DocumentMutation],
+) -> list[DocumentMutation]:
+    """Compile a bundle to one version-checked write per document.
+
+    A candidate may legitimately change several attributes on one entity.  If
+    those changes are persisted as separate writes, the first write advances
+    the document version and makes every following write fail its own CAS.
+    """
+    combined: dict[tuple[str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str]] = []
+    for mutation in mutations:
+        key = (mutation.collection, mutation.document_id)
+        if key not in combined:
+            order.append(key)
+            combined[key] = {
+                "expected_version": mutation.expected_version,
+                "set_fields": {},
+                "inc_fields": {},
+                "add_to_set_fields": {},
+            }
+        entry = combined[key]
+        if entry["expected_version"] != mutation.expected_version:
+            raise ValueError(
+                f"Conflicting expected versions for {mutation.collection} "
+                f"document {mutation.document_id}"
+            )
+        entry["set_fields"].update(mutation.set_fields)
+        for path, amount in mutation.inc_fields.items():
+            entry["inc_fields"][path] = entry["inc_fields"].get(path, 0) + amount
+        entry["add_to_set_fields"].update(mutation.add_to_set_fields)
+
+    return [
+        DocumentMutation(
+            collection=collection,
+            document_id=document_id,
+            expected_version=combined[(collection, document_id)]["expected_version"],
+            set_fields=combined[(collection, document_id)]["set_fields"],
+            inc_fields=combined[(collection, document_id)]["inc_fields"],
+            add_to_set_fields=combined[(collection, document_id)]["add_to_set_fields"],
+        )
+        for collection, document_id in order
+    ]
 
 
 def _get_entity_by_id(world: WorldSnapshot, entity_id: str) -> Mapping[str, Any] | None:
@@ -77,6 +127,33 @@ def _get_entity_by_id(world: WorldSnapshot, entity_id: str) -> Mapping[str, Any]
         if _document_id(item) == entity_id:
             return item
     return None
+
+
+def _numeric_value(value: Any) -> int | float | None:
+    """Normalize a model number without accepting booleans or junk strings."""
+    if isinstance(value, bool):
+        return None
+    candidate: int | float
+    if isinstance(value, (int, float)):
+        candidate = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            candidate = float(text) if any(c in text.lower() for c in (".", "e")) else int(text)
+        except ValueError:
+            return None
+    else:
+        return None
+    if not math.isfinite(candidate):
+        return None
+    return int(candidate) if float(candidate).is_integer() else candidate
+
+
+def _stats(document: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = document.get("character") or document.get("stats") or {}
+    return value if isinstance(value, Mapping) else {}
 
 
 def _document_id(document: Mapping[str, Any]) -> str | None:
@@ -123,6 +200,12 @@ def validate_candidate_bundle(
             if mutation.path not in ALLOWED_MUTATION_PATHS:
                 return False, f"Mutation path '{mutation.path}' is not permitted"
 
+            if mutation.path in NUMERIC_MUTATION_PATHS:
+                if mutation.op not in {"SET", "ADD"}:
+                    return False, f"Cannot use op '{mutation.op}' on numeric path '{mutation.path}'"
+                if _numeric_value(mutation.value) is None:
+                    return False, f"Invalid numeric value for '{mutation.path}': {mutation.value!r}"
+
             target = _get_entity_by_id(world, mutation.target_id)
             if not target:
                 if mutation.target_id == current_cell_id:
@@ -130,12 +213,7 @@ def validate_candidate_bundle(
                 else:
                     return False, f"Target entity '{mutation.target_id}' not found in room context"
 
-            if mutation.path == "stats.hp":
-                if mutation.op == "SET":
-                    if not isinstance(mutation.value, (int, float)) or mutation.value < 0:
-                        return False, f"Invalid HP value: {mutation.value}"
-
-            elif mutation.path == "physical_conditions":
+            if mutation.path == "physical_conditions":
                 if mutation.op not in {"ADD", "REMOVE"}:
                     return False, f"Cannot use op '{mutation.op}' on physical_conditions; only ADD or REMOVE are permitted"
                 if mutation.target_id == current_cell_id or not (target.get("stats") is not None or target.get("character") is not None or mutation.target_id == player_id or target in world.characters):
@@ -180,6 +258,15 @@ def validate_candidate_bundle(
         elif isinstance(mutation, AppendEvent):
             if not isinstance(mutation.event_type, EventType):
                 return False, f"Invalid EventType '{mutation.event_type}'"
+            if mutation.event_type == EventType.DIALOGUE:
+                npc_id = mutation.payload.get("npc_id")
+                npc = next(
+                    (c for c in world.characters if _document_id(c) == npc_id), None
+                )
+                if npc is None:
+                    return False, "Dialogue payload must reference a visible character via npc_id"
+                if not mutation.payload.get("utterance") and not mutation.payload.get("dialogue_intent"):
+                    return False, "Dialogue payload requires an utterance or dialogue_intent"
 
     return True, None
 
@@ -209,7 +296,16 @@ def apply_mutation_bundle(
 
     campaign_id = world.campaign.get("_id") or world.campaign.get("id", "")
     player_id = _document_id(world.player) or ""
-    current_turn = world.campaign.get("current_turn", world.campaign.get("turn_count", 0))
+    campaign_turn = int(
+        world.campaign.get("current_turn", world.campaign.get("turn_count", 0))
+    )
+    execution = bundle.execution
+    expected_turn = execution.expected_turn if execution else campaign_turn
+    # Mutations describe the action being committed after the snapshot's
+    # current turn.  Event uniqueness and repository CAS both use that next
+    # sequence, never the already-committed snapshot sequence.
+    turn_sequence = expected_turn + 1
+    pending_numeric_values: dict[tuple[str, str], int | float] = {}
 
     for mutation in bundle.mutations:
         if isinstance(mutation, ApplyDocumentMutation):
@@ -246,13 +342,32 @@ def apply_mutation_bundle(
             if mutation.path.startswith("stats.") and target_entity is not None:
                 canonical_path = f"character.{mutation.path.removeprefix('stats.')}"
 
-            if mutation.op == "ADD" and isinstance(mutation.value, (int, float)):
+            numeric = _numeric_value(mutation.value)
+            if mutation.path == "stats.hp" and target_entity is not None and numeric is not None:
+                key = (target_id, mutation.path)
+                stats = _stats(target_entity)
+                current = pending_numeric_values.get(key, _numeric_value(stats.get("hp")) or 0)
+                value = numeric if mutation.op == "SET" else current + numeric
+                max_hp = _numeric_value(stats.get("max_hp"))
+                value = max(0, value)
+                if max_hp is not None:
+                    value = min(value, max_hp)
+                pending_numeric_values[key] = value
                 doc_mutations.append(
                     DocumentMutation(
                         collection=coll,
                         document_id=target_id,
                         expected_version=target_version,
-                        inc_fields={canonical_path: int(mutation.value)},
+                        set_fields={canonical_path: value},
+                    )
+                )
+            elif mutation.op == "ADD" and numeric is not None:
+                doc_mutations.append(
+                    DocumentMutation(
+                        collection=coll,
+                        document_id=target_id,
+                        expected_version=target_version,
+                        inc_fields={canonical_path: numeric},
                     )
                 )
             elif mutation.path in {"physical_conditions", "mental_conditions"}:
@@ -283,7 +398,11 @@ def apply_mutation_bundle(
                         collection=coll,
                         document_id=target_id,
                         expected_version=target_version,
-                        set_fields={canonical_path: mutation.value},
+                        set_fields={
+                            canonical_path: numeric
+                            if mutation.path in NUMERIC_MUTATION_PATHS
+                            else mutation.value
+                        },
                     )
                 )
 
@@ -335,26 +454,60 @@ def apply_mutation_bundle(
             events.append(
                 Event(
                     campaign_id=campaign_id,
-                    event_id=f"event_{mutation.event_type.value}_{current_turn}_{event_idx}",
-                    turn_sequence=current_turn,
+                    event_id=f"event_{mutation.event_type.value}_{turn_sequence}_{event_idx}",
+                    turn_sequence=turn_sequence,
                     event_index=event_idx,
-                    turn_id=turn_id or f"turn_{current_turn}",
+                    turn_id=turn_id or f"turn_{turn_sequence}",
                     type=mutation.event_type,
                     actor_id=player_id,
                     entity_ids=list(touched_entity_ids),
                     cell_id=current_cell_id,
-                    payload=mutation.payload,
+                    payload=dict(mutation.payload),
                     summary=mutation.summary,
                     memory_status=MemoryStatus.NOT_REQUIRED,
                 )
             )
 
-    execution = bundle.execution
+    # HP reaching zero has one deterministic meaning.  The model proposes the
+    # damage; application code derives death and its canonical event.
+    for (target_id, path), final_value in pending_numeric_values.items():
+        if path != "stats.hp" or final_value > 0 or target_id == player_id:
+            continue
+        target = _get_entity_by_id(world, target_id)
+        if target is None or _stats(target).get("status") == "DEAD":
+            continue
+        target_version = int(target.get("version", 0))
+        doc_mutations.append(
+            DocumentMutation(
+                collection="entities",
+                document_id=target_id,
+                expected_version=target_version,
+                set_fields={"character.status": "DEAD"},
+            )
+        )
+        event_idx = len(events)
+        events.append(
+            Event(
+                campaign_id=campaign_id,
+                event_id=f"event_{EventType.ENTITY_DIED.value}_{turn_sequence}_{event_idx}",
+                turn_sequence=turn_sequence,
+                event_index=event_idx,
+                turn_id=turn_id or f"turn_{turn_sequence}",
+                type=EventType.ENTITY_DIED,
+                actor_id=player_id,
+                entity_ids=[target_id],
+                cell_id=current_cell_id,
+                payload={"defender_id": target_id, "killer_ids": [player_id]},
+                summary=f"{target_id} died.",
+                memory_status=MemoryStatus.PENDING,
+            )
+        )
+
     return Resolution(
         accepted=True,
         reason=None,
         events=events,
-        mutations=doc_mutations,
+        mutations=_coalesce_document_mutations(doc_mutations),
         inserts=canonical_inserts,
         touched_entity_ids=(
             list(execution.touched_entity_ids) if execution else list(touched_entity_ids)
@@ -363,9 +516,11 @@ def apply_mutation_bundle(
             list(execution.touched_cell_ids) if execution else list(touched_cell_ids)
         ),
         rejected_effects=list(execution.rejected_effects) if execution else [],
-        expected_turn=execution.expected_turn if execution else None,
+        expected_turn=expected_turn,
         expected_campaign_version=(
-            execution.expected_campaign_version if execution else None
+            execution.expected_campaign_version
+            if execution and execution.expected_campaign_version is not None
+            else int(world.campaign.get("version", 0))
         ),
         turn_id=(execution.turn_id if execution and execution.turn_id else turn_id),
         current_cell_id=(

@@ -43,7 +43,10 @@ from app.domain.mutation_validator import apply_mutation_bundle, validate_candid
 from app.domain.picker import select_winning_candidate
 from app.domain.rng import TurnRng
 from app.domain.rules import Resolution
-from app.harness.candidate_generator import load_candidate_count
+from app.harness.candidate_generator import (
+    load_candidate_count,
+    load_candidate_validation_retries,
+)
 from app.harness.jev_scorer import JevScoringError, load_runtime_rules
 from app.harness.model_client import ModelOutputError
 from app.services.turn_trace_logger import log_turn_trace
@@ -95,6 +98,107 @@ def _debug_murder_query(text: str) -> str | None:
     if parsed is None or parsed[0] != "murder":
         return None
     return parsed[1]
+
+
+def _model_world(snapshot, context_text: str) -> dict:
+    """One canonical model view shared by generation and Jev scoring."""
+    from app.persistence.views import thaw
+
+    player = thaw(snapshot.player)
+    characters = [thaw(character) for character in snapshot.characters]
+    owned_items = [thaw(item) for item in snapshot.owned_items]
+    player_id = player.get("entity_id") or player.get("id")
+
+    def inventory_for(owner_id: str) -> list[dict]:
+        return [
+            item for item in owned_items
+            if item.get("location", {}).get("ref_id") == owner_id
+        ]
+
+    for character in characters:
+        owner_id = character.get("entity_id") or character.get("id")
+        character["inventory"] = inventory_for(owner_id)
+
+    return {
+        "player": player,
+        "player_inventory": inventory_for(player_id),
+        "current_cell": thaw(snapshot.current_cell),
+        "characters": characters,
+        "items": [thaw(item) for item in snapshot.items],
+        "container_items": [thaw(item) for item in snapshot.container_items],
+        "config": thaw(snapshot.config),
+        "policy_context": context_text,
+    }
+
+
+def _fallback_adjudication_snapshot(engine: EnginePort, view: WorldView):
+    """Build canonical-shaped state for non-persistent test/demo engines."""
+    from app.persistence.views import WorldView as PersistenceWorldView, freeze
+
+    sheet = engine.player_sheet(view.campaign_id, view.player_id)
+    owned_items = []
+    for item in sheet.carried:
+        owned_items.append({
+            "id": item.id,
+            "entity_id": item.id,
+            "name": item.name,
+            "entity_type": "ITEM",
+            "item": {"quantity": item.quantity},
+            "location": {"kind": "INVENTORY", "ref_id": view.player_id, "slot": None},
+            "version": 0,
+        })
+    for slot, item in (("WEAPON", sheet.weapon), ("ARMOR", sheet.armor)):
+        if item is not None:
+            owned_items.append({
+                "id": item.id,
+                "entity_id": item.id,
+                "name": item.name,
+                "entity_type": "ITEM",
+                "item": {"quantity": item.quantity, "subtype": slot},
+                "location": {"kind": "EQUIPPED", "ref_id": view.player_id, "slot": slot},
+                "version": 0,
+            })
+    return freeze(PersistenceWorldView(
+        campaign={"id": view.campaign_id, "turn_count": view.current_turn, "version": 0},
+        player={
+            "id": view.player_id,
+            "entity_id": view.player_id,
+            "character": {
+                "hp": sheet.hp, "max_hp": sheet.max_hp,
+                "mp": sheet.mp, "max_mp": sheet.max_mp,
+                "attack": sheet.stats.attack, "defense": sheet.stats.defense,
+                "speed": sheet.stats.speed, "dodge_pct": sheet.stats.dodge_pct,
+                "skill": sheet.stats.skill, "status": sheet.status,
+                "physical_conditions": list(sheet.physical_conditions),
+                "mental_conditions": list(sheet.mental_conditions),
+            },
+            "version": 0,
+        },
+        current_cell={"id": view.visible_cell.cell_id, "version": 0},
+        destination_cell=None,
+        characters=tuple({
+            "id": character.id,
+            "entity_id": character.id,
+            "name": character.name,
+            "entity_type": character.entity_type,
+            "character": {
+                "hp": getattr(character, "hp", 8),
+                "max_hp": getattr(character, "max_hp", 8),
+                "status": character.status,
+                "disposition": character.disposition,
+                "physical_conditions": list(character.physical_conditions),
+                "mental_conditions": list(character.mental_conditions),
+            },
+            "version": 0,
+        } for character in view.visible_cell.characters),
+        items=tuple({
+            "id": item.id, "entity_id": item.id, "name": item.name,
+            "entity_type": "ITEM", "where": item.where, "version": 0,
+        } for item in view.visible_cell.items),
+        container_items=(),
+        config={},
+        owned_items=tuple(owned_items),
+    ))
 
 
 class CampaignNotFound(LookupError):
@@ -181,6 +285,11 @@ class TurnOrchestrator:
 
         debug = get_settings().debug_endpoints
         debug_command = _debug_target_command(request.input) if debug else None
+        fast_resolution: EngineResolution | None = None
+        if intent is not None:
+            if intent.action_type in _SOCIAL_ACTIONS:
+                intent.params.setdefault("utterance", request.input[:300])
+            fast_resolution = engine.resolve(view, intent)
 
         if debug and request.input.strip().lower() in _DEBUG_DIE_COMMANDS:
             intent = Intent("WAIT", request.player_id, params={"debug_die": 1})
@@ -211,11 +320,13 @@ class TurnOrchestrator:
                 resolution = engine.resolve(view, intent)
             else:
                 resolution = EngineResolution(accepted=False, reason="Invalid fast debug syntax")
-        elif intent is not None:
+        elif (
+            intent is not None
+            and fast_resolution is not None
+            and not fast_resolution.retry_with_model
+        ):
             record.path = "FAST"
-            if intent.action_type in _SOCIAL_ACTIONS:
-                intent.params.setdefault("utterance", request.input[:300])
-            resolution = engine.resolve(view, intent)
+            resolution = fast_resolution
         else:
             record.path = "JEV_PIPELINE"
             action_class = harness.classify(request.input, view)
@@ -225,73 +336,84 @@ class TurnOrchestrator:
             )
             record.context_manifest = manifest.model_dump()
 
-            # World Snapshot for candidate validation
-            from app.domain.rules import WorldSnapshot
-            from app.persistence.views import WorldView as PersistenceWorldView, freeze
-            snapshot = freeze(
-                PersistenceWorldView(
-                    campaign={"id": campaign_id, "turn_count": view.current_turn, "version": 0},
-                    player={"id": view.player_id, "stats": {"hp": view.player.hp, "mp": view.player.mp, "max_hp": view.player.max_hp, "max_mp": view.player.max_mp}, "physical_conditions": list(view.player.physical_conditions), "mental_conditions": list(view.player.mental_conditions), "version": 0},
-                    current_cell={"id": view.visible_cell.cell_id, "version": 0},
-                    destination_cell=None,
-                    characters=tuple(
-                        {"id": c.id, "name": c.name, "entity_type": c.entity_type, "character": {"hp": getattr(c, "hp", 8), "max_hp": getattr(c, "max_hp", 8), "physical_conditions": list(c.physical_conditions), "mental_conditions": list(c.mental_conditions)}, "version": 0}
-                        for c in view.visible_cell.characters
-                    ),
-                    items=tuple(
-                        {"id": i.id, "name": i.name, "where": i.where, "version": 0}
-                        for i in view.visible_cell.items
-                    ),
-                    container_items=(),
-                    config={},
-                    owned_items=(),
-                )
+            # Generation, validation, and Jev must reason over the same
+            # canonical snapshot.  The durable engine includes full mechanics
+            # and inventory for the player and every visible character.
+            snapshot_loader = getattr(engine, "load_adjudication_snapshot", None)
+            snapshot = (
+                snapshot_loader(campaign_id, request.player_id)
+                if snapshot_loader is not None
+                else _fallback_adjudication_snapshot(engine, view)
             )
+            model_world = _model_world(snapshot, context_text)
 
             # Step A: Candidate Generation
             candidate_count = load_candidate_count()
-            try:
-                generation_res = harness.candidate_generator.generate_candidates(
-                    request.input,
-                    {"player": snapshot.player, "current_cell": snapshot.current_cell, "characters": list(snapshot.characters), "items": list(snapshot.items)},
-                    candidate_count=candidate_count,
-                )
-            except ModelOutputError:
-                logger.warning("candidate generation failed", exc_info=True)
-                resolution = EngineResolution(
-                    accepted=False,
-                    reason="No safe action candidates could be generated.",
-                )
-                return self._finish_rejected(
-                    view, record, resolution, "CANDIDATE_GENERATION_FAILED", manifest
-                )
-            generation_call = getattr(harness.candidate_generator, "last_result", None)
-            if generation_call is not None:
-                record.model_calls.append(
-                    ModelCall(
-                        role="CANDIDATE_GENERATOR",
-                        model=generation_call.model,
-                        input_tokens=generation_call.usage.get("input_tokens", 0),
-                        output_tokens=generation_call.usage.get("output_tokens", 0),
-                        latency_ms=generation_call.latency_ms,
-                        attempts=generation_call.attempts,
-                        schema_valid=True,
-                    ).model_dump()
-                )
-
-            generated_candidates = generation_res.candidates
+            max_validation_retries = load_candidate_validation_retries()
+            generated_candidates: list[MutationBundle] = []
+            candidate_trace: list[dict[str, Any]] = []
             filter_results: list[dict[str, Any]] = []
             surviving_candidates: list[MutationBundle] = []
 
-            for cand in generated_candidates:
-                is_valid, reason = validate_candidate_bundle(snapshot, cand)
-                filter_results.append({
-                    "bundle_id": cand.bundle_id,
-                    "valid": is_valid,
-                    "rejection_reason": reason,
-                })
-                if is_valid:
-                    surviving_candidates.append(cand)
+            validation_feedback: list[str] | None = None
+            for generation_attempt in range(1, max_validation_retries + 2):
+                try:
+                    generation_res = harness.candidate_generator.generate_candidates(
+                        request.input,
+                        model_world,
+                        candidate_count=candidate_count,
+                        validation_feedback=validation_feedback,
+                    )
+                except ModelOutputError:
+                    logger.warning("candidate generation failed", exc_info=True)
+                    resolution = EngineResolution(
+                        accepted=False,
+                        reason="No safe action candidates could be generated.",
+                    )
+                    return self._finish_rejected(
+                        view, record, resolution, "CANDIDATE_GENERATION_FAILED", manifest
+                    )
+                generation_call = getattr(harness.candidate_generator, "last_result", None)
+                if generation_call is not None:
+                    record.model_calls.append(
+                        ModelCall(
+                            role="CANDIDATE_GENERATOR",
+                            model=generation_call.model,
+                            input_tokens=generation_call.usage.get("input_tokens", 0),
+                            output_tokens=generation_call.usage.get("output_tokens", 0),
+                            latency_ms=generation_call.latency_ms,
+                            attempts=generation_call.attempts,
+                            schema_valid=True,
+                            retry_errors=generation_call.retry_errors,
+                        ).model_dump()
+                    )
+
+                generated_candidates = generation_res.candidates
+                attempt_filters: list[dict[str, Any]] = []
+                surviving_candidates = []
+                for cand in generated_candidates:
+                    is_valid, reason = validate_candidate_bundle(snapshot, cand)
+                    candidate_trace.append({
+                        **cand.model_dump(mode="json"),
+                        "generation_attempt": generation_attempt,
+                    })
+                    result = {
+                        "bundle_id": cand.bundle_id,
+                        "generation_attempt": generation_attempt,
+                        "valid": is_valid,
+                        "rejection_reason": reason,
+                    }
+                    attempt_filters.append(result)
+                    filter_results.append(result)
+                    if is_valid:
+                        surviving_candidates.append(cand)
+                if surviving_candidates:
+                    break
+                validation_feedback = sorted({
+                    str(result["rejection_reason"])
+                    for result in attempt_filters
+                    if result["rejection_reason"]
+                })[:10]
 
             if not surviving_candidates:
                 # All candidates filtered out
@@ -303,7 +425,7 @@ class TurnOrchestrator:
                     "campaign_id": campaign_id,
                     "turn_id": request.turn_id,
                     "player_input": request.input,
-                    "candidates": [c.model_dump(mode="json") for c in generated_candidates],
+                    "candidates": candidate_trace,
                     "filter_results": filter_results,
                     "winning_bundle": None,
                     "accepted": False,
@@ -315,7 +437,7 @@ class TurnOrchestrator:
                 scoring_res = harness.jev_scorer.score_candidates(
                     request.input,
                     surviving_candidates,
-                    {"player": snapshot.player, "current_cell": snapshot.current_cell, "characters": list(snapshot.characters)},
+                    model_world,
                     runtime_rules=load_runtime_rules(),
                 )
             except JevScoringError:
@@ -373,7 +495,7 @@ class TurnOrchestrator:
                 "campaign_id": campaign_id,
                 "turn_id": request.turn_id,
                 "player_input": request.input,
-                "candidates": [c.model_dump(mode="json") for c in generated_candidates],
+                "candidates": candidate_trace,
                 "filter_results": filter_results,
                 "scoring": scoring_res.model_dump(mode="json"),
                 "normalized_weights": normalized_weights,

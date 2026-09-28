@@ -722,6 +722,7 @@ class ModelCallRecord(DomainModel):
     latency_ms: int
     attempts: int
     schema_valid: bool
+    retry_errors: list[str] = Field(default_factory=list)
 
 
 class Verification(DomainModel):

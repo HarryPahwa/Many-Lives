@@ -512,7 +512,10 @@ def test_candidate_filter_failure_records_a_machine_readable_reason_code(client:
         def __init__(self):
             super().__init__()
             self.candidate_generator = FakeCandidateGenerator(
-                [CandidateGenerationResult(candidates=[invalid])]
+                [
+                    CandidateGenerationResult(candidates=[invalid]),
+                    CandidateGenerationResult(candidates=[invalid]),
+                ]
             )
 
     stubs.set_harness(InvalidCandidateHarness())

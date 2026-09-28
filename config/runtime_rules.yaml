@@ -98,7 +98,9 @@ features:
     damage_per_turn: 1
 
 candidate_generation:
-  candidate_count: 3
+  candidate_count: 10
+  max_output_tokens: 6000
+  all_rejected_retries: 1
   fallback_timeout_seconds: 5.0
 
 context:

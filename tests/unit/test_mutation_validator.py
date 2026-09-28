@@ -151,6 +151,10 @@ def test_apply_valid_mutation_bundle(sample_world):
     }
     assert len(resolution.events) == 1
     assert resolution.events[0].type == EventType.ITEM_TRANSFERRED
+    assert resolution.events[0].turn_sequence == 6
+    assert resolution.events[0].event_index == 0
+    assert resolution.expected_turn == 5
+    assert resolution.expected_campaign_version == 1
 
 
 def test_condition_mutation_validation_and_application(sample_world):
@@ -219,3 +223,104 @@ def test_condition_mutation_validation_and_application(sample_world):
     valid, reason = validate_candidate_bundle(sample_world, bundle_invalid_val)
     assert valid is False
     assert "Invalid MentalCondition" in reason
+
+
+def test_multiple_changes_to_one_entity_compile_to_one_atomic_write(sample_world):
+    bundle = MutationBundle(
+        bundle_id="cand_taunt_riposte",
+        action_description="Taunt, parry, and riposte",
+        rationale="The goblin takes the bait.",
+        draft_narration="The enraged goblin lunges into your riposte.",
+        mutations=[
+            MutateAttribute(
+                target_id="goblin_1",
+                path="mental_conditions",
+                value="ENRAGED",
+                op="ADD",
+            ),
+            MutateAttribute(
+                target_id="goblin_1", path="stats.hp", value=-3, op="ADD"
+            ),
+        ],
+    )
+
+    resolution = apply_mutation_bundle(sample_world, bundle)
+
+    assert resolution.accepted is True
+    assert len(resolution.mutations) == 1
+    mutation = resolution.mutations[0]
+    assert mutation.document_id == "goblin_1"
+    assert mutation.expected_version == 1
+    assert mutation.set_fields == {
+        "mental_conditions": ["ENRAGED"],
+        "character.hp": 5,
+    }
+    assert mutation.inc_fields == {}
+
+
+def test_string_damage_is_normalized_and_hp_is_clamped(sample_world):
+    bundle = MutationBundle(
+        bundle_id="cand_overkill",
+        action_description="Deal overwhelming damage",
+        rationale="A powerful hit lands.",
+        draft_narration="The blow drops the goblin.",
+        mutations=[
+            MutateAttribute(
+                target_id="goblin_1", path="stats.hp", value="-99", op="ADD"
+            )
+        ],
+    )
+
+    resolution = apply_mutation_bundle(sample_world, bundle)
+
+    assert resolution.accepted is True
+    assert resolution.mutations[0].set_fields == {
+        "character.hp": 0,
+        "character.status": "DEAD",
+    }
+    assert resolution.events[-1].type == EventType.ENTITY_DIED
+    assert resolution.events[-1].entity_ids == ["goblin_1"]
+
+
+def test_numeric_path_rejects_non_numeric_model_value(sample_world):
+    bundle = MutationBundle(
+        bundle_id="cand_bad_damage",
+        action_description="Deal nonsense damage",
+        rationale="Invalid model output.",
+        draft_narration="Nothing reliable happens.",
+        mutations=[
+            MutateAttribute(
+                target_id="goblin_1", path="stats.hp", value="lots", op="ADD"
+            )
+        ],
+    )
+
+    valid, reason = validate_candidate_bundle(sample_world, bundle)
+
+    assert valid is False
+    assert reason == "Invalid numeric value for 'stats.hp': 'lots'"
+
+
+def test_dialogue_requires_a_grounded_visible_character(sample_world):
+    missing_target = MutationBundle(
+        bundle_id="talk_missing",
+        action_description="Talk to someone absent",
+        rationale="Malformed proposal.",
+        draft_narration="You try to speak.",
+        mutations=[
+            AppendEvent(
+                event_type=EventType.DIALOGUE,
+                payload={
+                    "npc_id": "keeper_99",
+                    "dialogue_intent": "INITIATE_CONVERSATION",
+                    "npc_reaction": "ACKNOWLEDGE",
+                },
+                summary="Player tries to talk.",
+            )
+        ],
+    )
+
+    valid, reason = validate_candidate_bundle(sample_world, missing_target)
+
+    assert valid is False
+    assert reason == "Dialogue payload must reference a visible character via npc_id"

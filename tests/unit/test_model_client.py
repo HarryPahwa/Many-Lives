@@ -142,6 +142,9 @@ def test_provider_retries_invalid_json_then_returns_parsed_result():
 
     assert result.parsed == dressing
     assert result.attempts == 3
+    assert result.latency_ms >= 0
+    assert len(result.retry_errors) == 2
+    assert "ValidationError" in result.retry_errors[0]
     assert len(provider.calls) == 3
     assert "failed validation" in provider.calls[1]["messages"][-1]["content"]
     request = provider.calls[0]
@@ -158,6 +161,8 @@ def test_provider_retries_a_transport_failure_once_then_succeeds():
     result = structured_call(client)
 
     assert result.attempts == 2
+    assert len(result.retry_errors) == 1
+    assert "RuntimeError: temporary provider failure" in result.retry_errors[0]
     assert len(provider.calls) == 2
 
 
@@ -165,8 +170,10 @@ def test_provider_raises_after_exhausting_invalid_output_retries():
     provider = SequenceProvider([response("not json"), response("not json"), response("not json")])
     client = OpenRouterModelClient(settings(), client=provider)
 
-    with pytest.raises(ModelOutputError, match="after 3 attempts"):
+    with pytest.raises(ModelOutputError, match="after 3 attempts") as caught:
         structured_call(client)
+    assert len(caught.value.retry_errors) == 3
+    assert caught.value.latency_ms >= 0
 
 
 def test_factory_uses_fake_models_and_role_defaults_match_the_tdd():

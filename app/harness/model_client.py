@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import random
 import time
 from typing import Any, Generic, Protocol, TypeVar
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.config import Settings, get_settings
 from app.domain.types import Role
 from app.harness.strict_schema import strict_schema
 
 T = TypeVar("T", bound=BaseModel)
+logger = logging.getLogger("many_lives.model_client")
 
 
 class StructuredResult(BaseModel, Generic[T]):
@@ -26,6 +28,7 @@ class StructuredResult(BaseModel, Generic[T]):
     latency_ms: int
     attempts: int
     model: str
+    retry_errors: list[str] = Field(default_factory=list)
 
 
 class ModelOutputError(RuntimeError):
@@ -109,6 +112,27 @@ class OpenRouterModelClient:
             {"role": "user", "content": user},
         ]
         last_error: Exception | None = None
+        retry_errors: list[str] = []
+        call_started = time.monotonic()
+
+        def record_failure(attempt: int, started: float, exc: Exception) -> None:
+            elapsed_ms = round((time.monotonic() - started) * 1000)
+            detail = " ".join(str(exc).split())[:300] or "no error detail"
+            diagnostic = (
+                f"attempt {attempt} after {elapsed_ms}ms: "
+                f"{type(exc).__name__}: {detail}"
+            )
+            retry_errors.append(diagnostic)
+            logger.warning(
+                "structured model attempt failed role=%s model=%s attempt=%d "
+                "elapsed_ms=%d error_type=%s error=%s",
+                role.value,
+                model,
+                attempt,
+                elapsed_ms,
+                type(exc).__name__,
+                detail,
+            )
 
         for attempt in range(1, 4):
             started = time.monotonic()
@@ -140,12 +164,14 @@ class OpenRouterModelClient:
                         "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
                         "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
                     },
-                    latency_ms=round((time.monotonic() - started) * 1000),
+                    latency_ms=round((time.monotonic() - call_started) * 1000),
                     attempts=attempt,
                     model=model,
+                    retry_errors=retry_errors,
                 )
             except (ValidationError, ValueError, IndexError, ModelOutputError) as exc:
                 last_error = exc
+                record_failure(attempt, started, exc)
                 if attempt == 3:
                     break
                 messages.append(
@@ -156,11 +182,18 @@ class OpenRouterModelClient:
                 )
             except Exception as exc:
                 last_error = exc
+                record_failure(attempt, started, exc)
                 if attempt == 2:
                     break
                 time.sleep(0.05 * attempt)
 
-        raise ModelOutputError(f"Structured output failed for {role} after {attempt} attempts") from last_error
+        error = ModelOutputError(
+            f"Structured output failed for {role} after {attempt} attempts; "
+            + " | ".join(retry_errors)
+        )
+        error.retry_errors = retry_errors
+        error.latency_ms = round((time.monotonic() - call_started) * 1000)
+        raise error from last_error
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not self.settings.embedding_model:

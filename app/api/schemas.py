@@ -289,6 +289,7 @@ class ModelCall(_Wire):
     latency_ms: int = 0
     attempts: int = 1
     schema_valid: bool = True
+    retry_errors: list[str] = Field(default_factory=list)
 
 
 class ClaimCheck(_Wire):

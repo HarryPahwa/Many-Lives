@@ -1,6 +1,8 @@
 from copy import deepcopy
 
 from app.domain.inventory import drop_item, equip_item, take_item, unequip_item, use_item
+from app.domain.rules import resolve_inventory_action
+from app.domain.types import ActionIntent, ActionType
 
 
 def item(entity_id, subtype="TRINKET", *, quantity=1, kind="CELL", ref="cell_0_0", slot=None):
@@ -55,6 +57,39 @@ def test_take_allows_inventory_owned_by_a_dead_character():
                        current_cell_id="cell_0_0", lootable_owner_ids=["corpse"])
     assert result.accepted
     assert by_id(result, "loot")["location"]["ref_id"] == "player"
+
+
+def test_inventory_action_accepts_unique_partial_name_but_rejects_ambiguity():
+    weapon = item("weapon-id", "WEAPON")
+    weapon["name"] = "weapon 1"
+    intent = ActionIntent(
+        action_type=ActionType.TAKE_ITEM,
+        actor_id="player",
+        params={"query": "weapon"},
+    )
+    accepted = resolve_inventory_action(
+        intent,
+        items=[weapon],
+        player={},
+        current_cell_id="cell_0_0",
+        campaign_id="campaign",
+        turn_sequence=1,
+        turn_id="turn",
+    )
+    assert accepted.accepted
+
+    second = item("second-weapon", "WEAPON")
+    second["name"] = "weapon 2"
+    ambiguous = resolve_inventory_action(
+        intent,
+        items=[weapon, second],
+        player={},
+        current_cell_id="cell_0_0",
+        campaign_id="campaign",
+        turn_sequence=1,
+        turn_id="turn",
+    )
+    assert not ambiguous.accepted
 
 
 def test_drop_splits_stack_and_equip_swaps():

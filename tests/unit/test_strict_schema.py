@@ -8,6 +8,7 @@ import pytest
 from pydantic import BaseModel
 
 from app.domain.types import ActionProposal, RoomDressing
+from app.harness.candidate_generator import ModelCandidateGenerationResult
 from app.harness.strict_schema import SchemaReferenceError, strict_schema
 
 
@@ -71,3 +72,15 @@ def test_cyclic_local_reference_is_rejected():
 
     with pytest.raises(SchemaReferenceError, match="Cyclic"):
         strict_schema(RecursiveModel)
+
+
+def test_removable_sibling_keywords_do_not_break_reference_inlining():
+    schema = strict_schema(ModelCandidateGenerationResult)
+
+    for node in walk(schema):
+        assert "$ref" not in node
+        assert "default" not in node
+
+    bundle = schema["properties"]["candidates"]["items"]
+    assert "execution" not in bundle["properties"]
+    assert "origin" not in bundle["properties"]

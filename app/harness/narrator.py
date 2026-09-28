@@ -26,10 +26,16 @@ must have at least a present claim. Historical memories are background; current 
 wins. Never write an entity id. Name characters and items from the snapshot or from
 attacker_name, defender_name, killer_names, and item_name on the events. When
 social is supplied, the NPC answers the player's recent_dialogue with at
-least one quoted line of speech, in character and shaped by disposition. NPC speech may
+least one quoted line of speech, in character and shaped by disposition. This is mandatory
+for every committed DIALOGUE event, including INITIATE_CONVERSATION and guarded,
+dismissive, evasive, or refusing reactions; gestures may accompany but never replace the
+spoken line. NPC speech may
 reveal only supplied allowed_facts or revealed_fact; for anything else (a personal name,
 history, directions) the NPC deflects, evades, or answers vaguely instead of inventing
-it. Keep scene description to one sentence on a dialogue turn. When
+it. For a DIALOGUE event, honor its npc_reaction as the response mode while treating it
+as a proposal, never as permission to invent facts. Keep scene description to one sentence
+on a dialogue turn. For ATTACK_RESOLVED, when payload.damage is present and nonzero,
+state that positive damage magnitude in the prose. When
 rejection_reason is set, the player's attempt changed nothing and rejection_reason is
 already shown to them verbatim: do not restate it, never describe the attempted change
 as happening, and write at most two short sentences of the unchanged scene. Keep prose
@@ -45,6 +51,7 @@ def _model_call(result) -> ModelCallRecord:
         latency_ms=result.latency_ms,
         attempts=result.attempts,
         schema_valid=True,
+        retry_errors=result.retry_errors,
     )
 
 

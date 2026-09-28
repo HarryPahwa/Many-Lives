@@ -17,9 +17,9 @@ Both routes converge on a shared mutation-application boundary before canonical 
 
 The refactor also split world-generation configuration from runtime rules and added persistent physical and mental character conditions while preserving the semantic distinction between NPCs, enemies, and bosses.
 
-Final verification after integration:
+Latest verification after the follow-up hardening work:
 
-- 540 tests passed.
+- 555 tests passed.
 - The run included 14 Playwright browser tests, all integration tests, probes, and unit tests.
 - Tests ran with fake model components and required no external database or model credentials.
 
@@ -115,13 +115,19 @@ free-form player input
     -> narration from committed state
 ```
 
-The default candidate count is read from `config/runtime_rules.yaml`. Candidate generation and scoring are replaceable seams with deterministic fakes used by tests.
+The candidate count and output ceiling are read from `config/runtime_rules.yaml`. The current defaults are 10 candidates and 6,000 output tokens. Twenty candidates were tested, but generation commonly produced 4,000–5,000 output tokens and dominated turn latency. JEV scoring itself was generally sub-second in the observed runs; candidate generation was usually 5–13 seconds and became much slower when a structured-output retry occurred.
+
+Candidate generation and scoring are replaceable seams with deterministic fakes used by tests. Both receive the same canonical model-world projection: the environment, full player state, player inventory and equipment, visible-character state and inventory, room items, runtime context, and relevant policy context. JEV never scores against a thinner or differently shaped view than the generator used.
+
+If every generated candidate fails deterministic validation, the generator receives the distinct rejection reasons and regenerates once. `candidate_generation.all_rejected_retries` caps this separately from provider and structured-output retries. The retry is intended to correct malformed proposals, not bypass validation. If the bounded retry also yields no valid candidate, the turn is rejected with no mutation.
 
 ### 4.3 Why the fast path was restored
 
 The initial merge routed every normal command through JEV. In offline tests, `FakeCandidateGenerator` produced valid but empty bundles, so a command such as `north` could be accepted and narrated without moving the player. The generated context also lacked enough authoritative topology information for a model to derive a destination safely.
 
 The correction preserves deterministic interpretation for obvious commands while retaining JEV for ambiguity. This is both safer and cheaper, and it prevents model availability from controlling basic game mechanics.
+
+Fast-path parsing is not allowed to turn an ungrounded interpretation into a premature rejection. If a phrase such as `use weapon on goblin` parses structurally but its generic reference cannot be grounded, it falls through to candidate generation. Grounded rule failures remain deterministic rejections. Name matching uses exact matches first and then a unique partial match, so `weapon` may resolve to a single `weapon 1`, and `goblin` to a single `tunnel goblin`, without hard-coding individual names. Ambiguous partial matches remain errors.
 
 ## 5. Mutation model and authorization boundary
 
@@ -135,6 +141,12 @@ Model-generated candidates use a closed set of primitives:
 - `AppendEvent` — a proposed typed event payload and summary.
 
 The validator rejects missing or hallucinated entities, inaccessible cells, protected fields, unapproved paths, invalid condition operations, application-only mutation kinds, and model-supplied execution metadata.
+
+The generator uses a separate model-visible schema that omits application-owned execution fields entirely. This avoids requiring a strict-output provider to fabricate nullable commit metadata. Arbitrary `dict[str, Any]` payloads are not used for model events: the strict-schema conversion closed such dictionaries as empty objects, which silently forced every generated event payload to `{}`. Model events now use typed dialogue, combat, and general payloads that survive strict schema generation.
+
+Dialogue payloads contain `npc_id`, optional verbatim `utterance`, `dialogue_intent`, and `npc_reaction`. Deterministic validation requires `npc_id` to identify a visible character and requires either an utterance or an intent. Human-readable summaries are never used as authoritative entity references.
+
+Combat payloads contain one `hp_delta` source of truth. Application code converts a damaging delta into both a positive display `damage` value on the event and the canonical negative HP mutation. Duplicate model-proposed HP mutations for the same combat payload are discarded. This prevents event prose, displayed damage, and the database mutation from disagreeing.
 
 Model-facing paths such as `stats.hp` are mapped to the canonical repository shape, such as `character.hp`. Transfers and movement produce canonical `location` objects with `kind`, `ref_id`, and `slot`.
 
@@ -155,6 +167,16 @@ These operations cannot be submitted by model-originated bundles. The distinctio
 
 Early primitive tests used simplified mock fields such as `stats.hp`, `location_kind`, and `location_id`. Repository-backed parity work corrected the executor to understand real entity IDs, cell IDs, nested character documents, and canonical location objects. The persistence schema was not changed to accommodate the mutation engine; the mutation engine was adapted to the established schema.
 
+Numeric model values are normalized at the deterministic boundary. Finite numeric strings such as `"-3"` are accepted as numbers; booleans, nulls, non-finite values, and strings such as `"ADD"` or `"lots"` are rejected. HP changes are applied arithmetically and clamped to `[0, max_hp]`. Multiple changes to the same document compile into one version-checked write, preventing the first field update from invalidating the second update's compare-and-set version.
+
+When non-player HP reaches zero, application code derives `status = DEAD` and an `ENTITY_DIED` event. The model proposes damage but does not decide whether canonical death occurred. This was added after a live run reached `hp = 0` while leaving the goblin `ALIVE`, permitting an additional attack. Historical corrupted records are not silently rewritten by this rule.
+
+### 5.4 Current spellcasting limitation
+
+Magic is scaffolded but not connected to this proposal pipeline. The repository has MP, `CAST`, `SPELL_CAST`, spellbook fields, and runtime values for a three-MP/six-damage spell, but there is no complete deterministic cast resolver or model-facing typed spell payload. A live fireball attempt therefore produced null MP mutations; both the initial batch and its bounded regeneration were correctly rejected.
+
+Until spellcasting is implemented, the generator must not be treated as authority to invent spell access, MP cost, or damage. A future implementation should follow the combat pattern: a typed spell proposal, followed by deterministic checks for known/carried spell, sufficient MP, configured cost, dodge, damage, and canonical events.
+
 ## 6. Persistent character conditions and entity semantics
 
 ### 6.1 Closed condition vocabularies
@@ -173,6 +195,12 @@ Harness projections preserve canonical `NPC`, `ENEMY`, and `BOSS` entity types. 
 
 The API and UI expose entity types and active condition tags. Browser rendering continues to use safe text-node updates.
 
+### 6.3 Dialogue behavior and progression
+
+The generator prompt is action-neutral rather than combat-first. It asks for outcome diversity appropriate to the interaction class: dialogue and social reactions, combat results, exploration discoveries, and inventory/use consequences. For `INITIATE_CONVERSATION`, a proposed NPC reaction must be spoken—such as a greeting, guarded question, or verbal refusal—rather than only a nod or stare. The narrator must include quoted speech for a committed `DIALOGUE` event; gestures may accompany but not replace it.
+
+Dialogue currently progresses as independent player turns. Explicit follow-ups naming the NPC and topic are grounded well, and relevant event memories may return through context. There is not yet a canonical active-conversation frame containing partner, topic, unanswered question, or last response. Pronoun-only follow-ups such as `why?` or `ask them what happened next` may therefore depend on memory retrieval rather than deterministic conversational reference. A future conversation frame can improve continuity without granting the model state authority.
+
 ## 7. Configuration lifecycle
 
 The former monolithic `config/balance.yaml` was intentionally split:
@@ -186,11 +214,13 @@ Campaign creation reads world-generation configuration. Room planning composes t
 
 ### 8.1 Turn traces
 
-`logs/turn_traces.jsonl` records player input, generated candidates, filter results, semantic scores, normalized weights, the selected bundle, and final acceptance.
+`logs/turn_traces.jsonl` records player input, every generated candidate, generation-attempt number, filter results, semantic scores, normalized weights, the selected bundle, and final acceptance. Rejected first batches remain visible when bounded regeneration succeeds.
 
 ### 8.2 Database diagnostics
 
-`logs/db.log` records SQLite transaction and touched-table diagnostics. Expected duplicate turn claims currently use exception-based control flow and may create noisy error entries even when replay behavior is correct.
+`logs/db.log` records SQLite transaction and touched-table diagnostics. Turn updates avoid duplicate inserts during ordinary lifecycle transitions, reducing misleading duplicate-key noise.
+
+Structured model telemetry records total cumulative latency across all attempts, rather than only the successful final attempt. Each failed attempt records bounded elapsed time, exception type, and error text without logging prompt or response contents. Provider/schema retries and all-candidates-rejected regeneration are distinct mechanisms with separate caps.
 
 ### 8.3 Inspector
 
@@ -237,7 +267,7 @@ uv sync --frozen --all-extras
 Result:
 
 ```text
-540 passed, 0 failed
+555 passed, 0 failed
 ```
 
 Coverage includes SQLite lifecycle and durability, campaign-scoped operations, movement, combat, inventory, discovery, invariants, duplicate turns, concurrent serialization, mutation authorization and parity, JEV generation/scoring/selection, narration failure after commit, and browser behavior.
@@ -248,6 +278,7 @@ One Starlette/AnyIO alias deprecation warning remains and does not affect behavi
 
 - Decompose the large JEV branch in `TurnOrchestrator._take_turn_locked` into focused pipeline functions.
 - Clarify type names for model proposal bundles versus authorized execution bundles.
-- Record candidate-generator and JEV-scorer calls in inspector model-call telemetry.
-- Reduce error-level logging for expected duplicate turn claims.
 - Add measured production latency and database-size benchmarks; the original planning estimates were not retained as verified facts.
+- Add an explicit canonical conversation frame if pronoun-heavy multi-turn dialogue becomes a product requirement.
+- Implement the simple spellbook path only when P1 magic is scheduled; do not approximate it with unconstrained model mutations.
+- Consider a targeted PydanticAI migration for the model-output boundary. Typed outputs, output validators, and bounded validation feedback could replace custom schema/retry plumbing, but deterministic grounding, mutation authorization, seeded selection, and canonical application must remain project-owned. This is not a reason to migrate the rest of the harness wholesale.

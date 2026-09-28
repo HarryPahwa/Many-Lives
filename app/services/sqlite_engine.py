@@ -38,6 +38,40 @@ from app.world.topology import parse_cell_key
 logger = logging.getLogger(__name__)
 
 
+_UNGROUNDED_REASONS = frozenset(
+    {
+        "You don't see that item here.",
+        "You don't see that here.",
+        "There's no one here by that name to speak with.",
+        "There's nothing here by that name to attack.",
+        "There's nothing here by that name to murder.",
+    }
+)
+
+
+def _reference_exists(snapshot: PersistenceWorldView, action: ActionIntent) -> bool:
+    """Whether the fast intent names a real entity, regardless of usability."""
+    query = str(
+        action.params.get("target_id")
+        or action.params.get("item_id")
+        or action.params.get("query")
+        or ""
+    ).casefold().strip()
+    if not query:
+        return False
+    entities = [
+        *snapshot.characters,
+        *snapshot.items,
+        *snapshot.container_items,
+        *snapshot.owned_items,
+    ]
+    return any(
+        (entity.get("entity_id") or entity.get("id")) == query
+        or str(entity.get("name", "")).casefold() == query
+        for entity in entities
+    )
+
+
 class SQLiteEngine:
     """Adapt deterministic domain and persistence services to ``EnginePort``."""
 
@@ -83,6 +117,12 @@ class SQLiteEngine:
             generate_room(self.repository, campaign_id, snapshot.current_cell["cell_id"])
             snapshot = self.repository.load_world_view(campaign_id, player_id)
         return self._seam_view(snapshot)
+
+    def load_adjudication_snapshot(
+        self, campaign_id: str, player_id: str
+    ) -> PersistenceWorldView:
+        """Load the canonical immutable state used by generation and scoring."""
+        return self.repository.load_world_view(campaign_id, player_id)
 
     def parse_fast_path(self, text: str, actor_id: str) -> Intent | None:
         from app.services.stubs import Intent
@@ -130,7 +170,12 @@ class SQLiteEngine:
 
         raw = resolve_world_action(action, snapshot, turn_id="pending")
         if not raw.accepted:
-            return self._seam_resolution(raw, pending=(snapshot, action))
+            resolution = self._seam_resolution(raw, pending=(snapshot, action))
+            resolution.retry_with_model = (
+                raw.reason in _UNGROUNDED_REASONS
+                and not _reference_exists(snapshot, action)
+            )
+            return resolution
         bundle = resolution_to_mutation_bundle(raw, bundle_id="fast:pending")
         compiled = apply_mutation_bundle(snapshot, bundle, turn_id="pending")
         return self._seam_resolution(compiled, pending=(snapshot, action))
@@ -326,10 +371,15 @@ class SQLiteEngine:
             self._indexes_ready = True
 
     def put_turn(self, record: TurnRecord) -> None:
-        claim = self.repository.begin_turn(
-            record.campaign_id, record.turn_id, record.player_id, record.input or "",
-            kind=record.kind, path=record.path,
-        )
+        # ``put_turn`` is also used for status transitions (RECEIVED ->
+        # COMMITTED/NARRATED/REJECTED).  Avoid deliberately attempting a
+        # duplicate insert on every transition; besides being wasteful, the
+        # SQLite adapter logs the caught integrity error as a write failure.
+        if self.repository.get_turn(record.campaign_id, record.turn_id) is None:
+            self.repository.begin_turn(
+                record.campaign_id, record.turn_id, record.player_id, record.input or "",
+                kind=record.kind, path=record.path,
+            )
         fields = asdict(record)
         fields.pop("campaign_id")
         fields.pop("turn_id")

@@ -48,6 +48,7 @@ def _record(result) -> ModelCallRecord:
         latency_ms=result.latency_ms,
         attempts=result.attempts,
         schema_valid=True,
+        retry_errors=result.retry_errors,
     )
 
 

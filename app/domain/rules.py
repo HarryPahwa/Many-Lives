@@ -281,10 +281,19 @@ def resolve_inventory_action(
 ) -> Resolution:
     """Resolve an A3 inventory intent against supplied immutable snapshots."""
     query = str(intent.params.get("item_id") or intent.params.get("query") or "")
-    matches = [
+    normalized_query = query.casefold().strip()
+    exact_matches = [
         item for item in items
         if item.get("entity_id") == query
-        or str(item.get("name", "")).casefold() == query.casefold()
+        or str(item.get("name", "")).casefold() == normalized_query
+    ]
+    # A player should not need to type generated suffixes such as "weapon 1"
+    # when a shorter description identifies exactly one visible item.  Prefer
+    # exact matches, and only fall back to partial matching when unambiguous.
+    matches = exact_matches or [
+        item for item in items
+        if normalized_query
+        and normalized_query in str(item.get("name", "")).casefold()
     ]
     if len(matches) != 1:
         return Resolution(False, "You don't see that item here.")

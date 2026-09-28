@@ -118,6 +118,10 @@ class EngineResolution:
     outcome_summary: str = ""
     rolls: list[Roll] = field(default_factory=list)
     rejected_effects: list[dict[str, Any]] = field(default_factory=list)
+    # A syntactically parsed fast command whose entity references could not be
+    # grounded is not a final rejection; the original text should be offered
+    # to contextual candidate generation.
+    retry_with_model: bool = False
     # Private adapter state. The SQLite engine resolves against an immutable
     # persistence snapshot, then binds the client turn_id when it commits.
     pending: Any = field(default=None, repr=False)
@@ -577,6 +581,82 @@ class StubEngine:
             exits=self._exits(camp, camp.player_cell),
         )
 
+    def load_adjudication_snapshot(self, campaign_id: str, player_id: str):
+        """Canonical-shaped snapshot for the model pipeline in stub runs."""
+        from app.persistence.views import WorldView as PersistenceWorldView, freeze
+
+        camp = self._require(campaign_id)
+        cell = camp.cells[camp.player_cell]
+        owned_items = tuple({
+            "id": item.id,
+            "entity_id": item.id,
+            "name": item.name,
+            "entity_type": "ITEM",
+            "item": {
+                "quantity": item.quantity,
+                **({"subtype": item.slot} if item.slot else {}),
+            },
+            "location": {
+                "kind": item.where.upper(),
+                "ref_id": player_id,
+                "slot": item.slot,
+            },
+            "version": 0,
+        } for item in camp.inventory if item.where in {"inventory", "equipped"})
+        return freeze(PersistenceWorldView(
+            campaign={
+                "id": camp.campaign_id,
+                "current_turn": camp.current_turn,
+                "version": 0,
+            },
+            player={
+                "id": player_id,
+                "entity_id": player_id,
+                "character": {
+                    "hp": camp.hp, "max_hp": camp.max_hp,
+                    "mp": camp.mp, "max_mp": camp.max_mp,
+                    "attack": 5, "defense": 2, "speed": 4,
+                    "dodge_pct": 10, "skill": 3,
+                    "status": "ALIVE" if camp.hp > 0 else "DEAD",
+                    "physical_conditions": [], "mental_conditions": [],
+                },
+                "version": 0,
+            },
+            current_cell={
+                "id": camp.player_cell,
+                "cell_id": camp.player_cell,
+                "name": cell.name,
+                "description": cell.description,
+                "features": [feature.model_dump() for feature in cell.features],
+                "version": 0,
+            },
+            destination_cell=None,
+            characters=tuple({
+                "id": character.id,
+                "entity_id": character.id,
+                "name": character.name,
+                "entity_type": character.entity_type,
+                "location": {"kind": "CELL", "ref_id": camp.player_cell},
+                "character": {
+                    "hp": character.hp, "max_hp": character.max_hp,
+                    "status": character.status,
+                    "disposition": character.disposition,
+                    "physical_conditions": list(character.physical_conditions),
+                    "mental_conditions": list(character.mental_conditions),
+                },
+                "version": 0,
+            } for character in cell.characters),
+            items=tuple({
+                "id": item.id, "entity_id": item.id, "name": item.name,
+                "entity_type": "ITEM", "item": {"quantity": item.quantity},
+                "location": {"kind": "CELL", "ref_id": camp.player_cell},
+                "version": 0,
+            } for item in cell.items if item.where == "floor"),
+            container_items=(),
+            config={},
+            owned_items=owned_items,
+        ))
+
     def _player_state(self, camp: _Campaign) -> PlayerState:
         return PlayerState(
             hp=camp.hp,
@@ -658,6 +738,14 @@ class StubEngine:
             for i in camp.inventory
             if i.where == "inventory"
         ]
+        equipped = {
+            i.slot: InventoryItem(
+                id=i.id, name=i.name, quantity=i.quantity, slot=i.slot,
+                stackable=not i.is_key,
+            )
+            for i in camp.inventory
+            if i.where == "equipped" and i.slot
+        }
         return PlayerSheet(
             player_id=camp.player_id,
             name=camp.player_name,
@@ -671,8 +759,8 @@ class StubEngine:
             status="ALIVE" if camp.hp > 0 else "DEAD",
             stats=Stats(attack=5, defense=2, speed=4, dodge_pct=10, skill=3),
             carried=carried,
-            weapon=None,
-            armor=None,
+            weapon=equipped.get("WEAPON"),
+            armor=equipped.get("ARMOR"),
             keys_held=sum(
                 1 for i in camp.inventory if i.is_key and i.where == "inventory"
             ),
@@ -823,7 +911,9 @@ class StubEngine:
             cell = camp.cells[camp.player_cell]
             match = next((i for i in cell.items if want in i.name.lower()), None)
             if match is None:
-                return EngineResolution(False, reason=f"There is no {want} here.")
+                return EngineResolution(
+                    False, reason=f"There is no {want} here.", retry_with_model=True
+                )
             if sum(1 for i in camp.inventory if i.where == "inventory") >= 6:
                 return EngineResolution(False, reason="Your hands and pack are full.")
             return EngineResolution(
@@ -856,7 +946,11 @@ class StubEngine:
                 return EngineResolution(False, reason=reason)
             target = matches[0] if guaranteed else (matches[0] if matches else None)
             if target is None:
-                return EngineResolution(False, reason=f"There is no {want} to attack.")
+                return EngineResolution(
+                    False,
+                    reason=f"There is no {want} to attack.",
+                    retry_with_model=True,
+                )
             # Code RNG only (§5.8) — never model output.
             rng = random.Random(f"{camp.seed}:{camp.current_turn}:{target.id}")
             roll = rng.randint(1, 20)
@@ -873,7 +967,11 @@ class StubEngine:
                 rolls=[Roll(purpose="attack", sides=20, value=roll)],
             )
 
-        return EngineResolution(False, reason=f"You cannot do that yet ({at}).")
+        return EngineResolution(
+            False,
+            reason=f"You cannot do that yet ({at}).",
+            retry_with_model=True,
+        )
 
     # ---- commit (§9.9) ----
 
