@@ -1,4 +1,4 @@
-import mongomock
+from app.persistence.sqlite import get_sqlite_connection
 
 from app.domain.types import Event, EventType, MemoryStatus, VectorMemoryConfig
 from app.harness.memory_pipeline import (
@@ -40,7 +40,7 @@ def test_memory_text_is_stable_and_groups_related_events():
 
 
 def test_extract_memories_stores_float32_and_marks_sources_complete():
-    db = mongomock.MongoClient().dungeon_test
+    db = get_sqlite_connection(":memory:")
     source = event().model_dump(mode="json")
     db.events.insert_one(source)
     ids = extract_memories(
@@ -52,9 +52,9 @@ def test_extract_memories_stores_float32_and_marks_sources_complete():
     assert db.events.find_one({"event_id": source["event_id"]})["memory_status"] == "COMPLETE"
 
 
-def test_vector_failure_is_non_fatal_and_flagged():
+def test_empty_sqlite_vector_search_is_non_fatal():
     result = retrieve(
-        db=mongomock.MongoClient().dungeon_test,
+        db=get_sqlite_connection(":memory:"),
         client=FakeModelClient(embedding_dims=4),
         campaign_id="cmp_1",
         query_text="ask Mara",
@@ -64,4 +64,4 @@ def test_vector_failure_is_non_fatal_and_flagged():
         recent_event_ids=set(),
     )
     assert result.memories == []
-    assert result.flags == ["VECTOR_UNAVAILABLE"]
+    assert result.flags == []

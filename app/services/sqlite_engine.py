@@ -1,4 +1,4 @@
-"""Mongo-backed implementation of the integration ``EnginePort`` seam."""
+"""SQLite-backed implementation of the integration ``EnginePort`` seam."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from app.api.schemas import (
 from app.domain.parser import parse_fast_path
 from app.domain.rules import DIRECTION_OFFSETS, Resolution, resolve_world_action
 from app.domain.types import ActionIntent
-from app.persistence.mongo import get_database
+from app.persistence.sqlite import get_database
 from app.persistence.repositories import Repository, StateNotFoundError
 from app.persistence.views import WorldView as PersistenceWorldView
 from app.services.campaign_service import create_campaign
@@ -35,7 +35,7 @@ from app.world.topology import parse_cell_key
 logger = logging.getLogger(__name__)
 
 
-class MongoEngine:
+class SQLiteEngine:
     """Adapt deterministic domain and persistence services to ``EnginePort``."""
 
     DURABLE = True
@@ -45,7 +45,7 @@ class MongoEngine:
         self._indexes_ready = False
 
     @classmethod
-    def from_environment(cls) -> "MongoEngine":
+    def from_environment(cls) -> "SQLiteEngine":
         return cls()
 
     @property
@@ -121,7 +121,7 @@ class MongoEngine:
 
         pending = resolution.pending
         if not isinstance(pending, tuple) or len(pending) != 2:
-            raise ValueError("Mongo resolutions must be committed by their originating engine")
+            raise ValueError("SQLite resolutions must be committed by their originating engine")
         snapshot, action = pending
         raw = resolve_world_action(action, snapshot, turn_id=turn_id)
         if not raw.accepted:
@@ -227,6 +227,61 @@ class MongoEngine:
 
     def history_stats(self, campaign_id: str) -> dict[str, int]:
         return self.repository.history_stats(campaign_id)
+
+    def append_events(self, campaign_id: str, events: list[dict[str, Any]]) -> int:
+        """Append campaign-scoped synthetic/probe history in one transaction."""
+        if self.repository.get_campaign(campaign_id) is None:
+            raise StateNotFoundError(f"Campaign not found: {campaign_id}")
+        documents = []
+        for event in events:
+            if event.get("campaign_id") != campaign_id:
+                raise ValueError("Every event must match campaign_id")
+            document = dict(event)
+            document.setdefault("_id", f"{campaign_id}:{document['event_id']}")
+            documents.append(document)
+        def write_events(connection) -> None:
+            for document in documents:
+                self.repository._db._write_document("events", document, replace=True)
+
+        self.repository._db.run_transaction(write_events)
+        return self.repository._db.events.count_documents({"campaign_id": campaign_id})
+
+    def append_memories(self, campaign_id: str, memories: list[dict[str, Any]]) -> int:
+        """Append campaign-scoped synthetic/probe memories in one transaction."""
+        if self.repository.get_campaign(campaign_id) is None:
+            raise StateNotFoundError(f"Campaign not found: {campaign_id}")
+        documents = []
+        for memory in memories:
+            if memory.get("campaign_id") != campaign_id:
+                raise ValueError("Every memory must match campaign_id")
+            document = dict(memory)
+            memory_id = document.get("memory_id") or document.get("id") or document.get("_id")
+            document.setdefault("memory_id", memory_id)
+            document.setdefault("_id", f"{campaign_id}:{memory_id}")
+            documents.append(document)
+        def write_memories(connection) -> None:
+            for document in documents:
+                self.repository._db._write_document("memories", document, replace=True)
+
+        self.repository._db.run_transaction(write_memories)
+        return self.repository._db.memories.count_documents({"campaign_id": campaign_id})
+
+    def raw_events(self, campaign_id: str) -> list[dict[str, Any]]:
+        documents = list(
+            self.repository._db.events.find({"campaign_id": campaign_id}).sort(
+                [("turn_sequence", 1), ("event_index", 1)]
+            )
+        )
+        for document in documents:
+            document.pop("_id", None)
+            document.pop("created_at", None)
+        return documents
+
+    def raw_memories(self, campaign_id: str) -> list[dict[str, Any]]:
+        documents = list(self.repository._db.memories.find({"campaign_id": campaign_id}))
+        for document in documents:
+            document.pop("_id", None)
+        return documents
 
     def get_turn(self, campaign_id: str, turn_id: str) -> TurnRecord | None:
         document = self.repository.get_turn(campaign_id, turn_id)

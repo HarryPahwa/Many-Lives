@@ -22,9 +22,8 @@ import os
 if os.environ.get("ALLOW_REAL_MODELS_IN_TESTS") != "1":
     os.environ["USE_FAKE_MODELS"] = "true"
     os.environ["IMAGE_CLIENT"] = "fake"
-    # Never let a test reach a real cluster either: the integration harness
-    # treats an empty URI as "run against the in-memory seam".
-    os.environ.setdefault("MONGODB_URI", "")
+    # Isolate all canonical state in a process-local SQLite file.
+    os.environ.setdefault("SQLITE_DB_PATH", f"/tmp/many-lives-pytest-{os.getpid()}.db")
 
 import pytest  # noqa: E402
 

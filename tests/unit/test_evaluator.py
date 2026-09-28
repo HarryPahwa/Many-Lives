@@ -1,4 +1,4 @@
-import mongomock
+from app.persistence.sqlite import get_sqlite_connection
 
 from app.harness.evaluator import metrics_for, run_suite
 from app.harness.policy_optimizer import apply, dominant_failure, promote_if_better, propose
@@ -6,7 +6,7 @@ from app.harness.context_policy import seed_context_policy
 
 
 def test_metrics_and_suite_persist_all_p0_probes():
-    db = mongomock.MongoClient().dungeon_test
+    db = get_sqlite_connection(":memory:")
     evaluation = run_suite(
         policy_version=1,
         probe_ids=["P01", "P14"],

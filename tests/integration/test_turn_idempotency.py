@@ -1,4 +1,4 @@
-import mongomock
+from app.persistence.sqlite import get_sqlite_connection
 
 from app.domain.rules import resolve_world_action
 from app.domain.types import ActionIntent, ActionType
@@ -16,7 +16,7 @@ class ImmediateTransactions:
 
 
 def setup_enemy(*, hp=1):
-    db = mongomock.MongoClient().dungeon
+    db = get_sqlite_connection(":memory:")
     create_btree_indexes(db)
     repo = Repository(db, transaction_runner=ImmediateTransactions())
     created = create_campaign(repo, "Ada", seed=44, campaign_id=CAMPAIGN_ID)

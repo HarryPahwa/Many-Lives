@@ -14,9 +14,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # MongoDB
-    mongodb_uri: str = ""
-    mongodb_db: str = "dungeon"
+    # Local canonical persistence
+    sqlite_db_path: str = "dungeon.db"
 
     # Model + embedding access
     openrouter_api_key: str = ""
@@ -41,7 +40,7 @@ class Settings(BaseSettings):
     image_output_compression: int = 70
     image_timeout_s: int = 90
     image_edit_include_base: bool = False
-    visual_store: str = "auto"  # auto | mongo | file | memory
+    visual_store: str = "auto"  # auto | sqlite | file | memory
     visuals_dir: str = ".visuals"
     visual_max_edits: int = 4
     visual_keep_revisions: int = 5

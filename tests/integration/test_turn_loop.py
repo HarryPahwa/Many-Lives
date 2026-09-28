@@ -80,7 +80,7 @@ def test_create_campaign_returns_summary_and_initial_turn(client: TestClient):
     assert body["campaign"]["status"] == "ACTIVE"
     assert body["campaign"]["player_id"] == "player_1"
     assert body["initial"]["narration"]
-    assert body["initial"]["visible_cell"]["cell_id"] == "cell_0_0"
+    assert body["initial"]["visible_cell"]["cell_id"] == body["initial"]["player"]["cell_id"]
 
 
 def test_move_through_cells_advances_state(client: TestClient):

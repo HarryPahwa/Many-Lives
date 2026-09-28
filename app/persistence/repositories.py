@@ -8,15 +8,16 @@ from datetime import UTC, datetime
 import logging
 from typing import Any, Literal, TypeVar
 
-from pymongo import ReturnDocument
-from pymongo.database import Database
-from pymongo.errors import DuplicateKeyError
-
 from app.domain.errors import ConcurrencyConflict
 from app.domain.invariants import InvariantReport, check_invariants, static_environment_digest
 from app.domain.rules import Resolution
 from app.domain.types import EngineTurnResult
 from app.persistence.views import WorldView, freeze
+from app.persistence.sqlite import (
+    DuplicateKeyError,
+    ReturnDocument,
+    SQLiteDatabase,
+)
 
 
 T = TypeVar("T")
@@ -45,7 +46,7 @@ class Repository:
 
     def __init__(
         self,
-        db: Database,
+        db: SQLiteDatabase,
         *,
         transaction_runner: TransactionRunner | None = None,
     ) -> None:
@@ -53,8 +54,7 @@ class Repository:
         self._transaction_runner = transaction_runner or self._run_production_transaction
 
     def _run_production_transaction(self, callback: TransactionCallback[T]) -> T:
-        with self._db.client.start_session() as session:
-            return session.with_transaction(callback)
+        return self._db.run_transaction(callback)
 
     def ensure_indexes(self) -> list[str]:
         """Create the repository's ordinary indexes before first durable write."""
@@ -219,9 +219,8 @@ class Repository:
     def history_stats(self, campaign_id: str) -> dict[str, int]:
         """Counts and stored size of one campaign's append-only history.
 
-        Read-only and campaign-scoped (§5.10). `$bsonSize` needs MongoDB 4.4+;
-        a deployment that rejects it reports zero bytes rather than failing,
-        because this only feeds a display.
+        Read-only and campaign-scoped (§5.10). Stored bytes are estimated from
+        the canonical JSON representation because this only feeds a display.
         """
         stats = {
             "events": self._db.events.count_documents({"campaign_id": campaign_id}),
@@ -229,15 +228,11 @@ class Repository:
             "turns": self._db.turns.count_documents({"campaign_id": campaign_id}),
             "stored_bytes": 0,
         }
-        pipeline = [
-            {"$match": {"campaign_id": campaign_id}},
-            {"$group": {"_id": None, "bytes": {"$sum": {"$bsonSize": "$$ROOT"}}}},
-        ]
         try:
             for collection in (self._db.events, self._db.memories):
-                grouped = next(iter(collection.aggregate(pipeline)), None)
-                if grouped is not None:
-                    stats["stored_bytes"] += int(grouped["bytes"])
+                stats["stored_bytes"] += collection.stored_json_bytes(
+                    {"campaign_id": campaign_id}
+                )
         except Exception:  # noqa: BLE001 - a size estimate is never worth a 500
             stats["stored_bytes"] = 0
         return stats
@@ -397,7 +392,7 @@ class Repository:
             return current
         started = current.get("generation_started_at")
         if started is not None:
-            # mongomock may deserialize aware datetimes as naive UTC.
+            # Older persisted values may deserialize as naive UTC.
             if started.tzinfo is None:
                 started = started.replace(tzinfo=UTC)
             cutoff = now.timestamp() - stale_after_seconds

@@ -87,6 +87,11 @@ def test_walking_updates_the_log_room_and_minimap(page, live_server):
     assert f"> {direction}" in log, "the player's command should appear in the log"
     assert page.text_content("#room") != room_before, "the room panel should change"
 
+    page.wait_for_function(
+        "count => document.querySelectorAll('#minimap .tile-known').length > count",
+        arg=before_tiles,
+        timeout=15000,
+    )
     after_tiles = page.locator("#minimap .tile-known").count()
     assert after_tiles > before_tiles, "moving should discover a new cell"
     assert page.console_errors == [], page.console_errors
@@ -267,6 +272,10 @@ def test_reload_reconnects_to_the_same_campaign(page, live_server):
         "() => document.getElementById('meta-id').textContent.startsWith('cmp_')",
         timeout=15000,
     )
+    page.wait_for_function(
+        "() => document.querySelectorAll('#minimap .tile-known').length >= 2",
+        timeout=15000,
+    )
 
     assert page.text_content("#meta-id").strip() == campaign_id
     assert "Resumed" in page.text_content("#narrative")
@@ -288,6 +297,10 @@ def test_the_page_survives_a_server_restart(page, live_server):
     page.reload()
     page.wait_for_function(
         "() => document.getElementById('meta-id').textContent.startsWith('cmp_')",
+        timeout=15000,
+    )
+    page.wait_for_function(
+        "() => document.querySelectorAll('#minimap .tile-known').length >= 2",
         timeout=15000,
     )
 

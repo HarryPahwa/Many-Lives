@@ -1,13 +1,13 @@
 """Tracer bullet: the smallest end-to-end turn slice.
 
 Proves the four-layer architecture: parse -> resolve -> commit -> read-back,
-entirely against mongomock (no Atlas, no network).
+entirely against in-memory SQLite (no network).
 
 The slice: a player at cell_0_0 moves north into cell_0_1 and the move sticks.
 """
 
-import mongomock
-from pymongo.database import Database
+from app.persistence.sqlite import get_sqlite_connection
+from app.persistence.sqlite import SQLiteDatabase
 
 from app.domain.parser import parse_fast_path
 from app.domain.rules import resolve_action
@@ -19,7 +19,7 @@ CAMPAIGN_ID = "cmp_tracer0001"
 PLAYER_ID = "player_1"
 
 
-def setup_minimal_world(db: Database) -> None:
+def setup_minimal_world(db: SQLiteDatabase) -> None:
     """Seed a campaign, its two cells, and one player at cell_0_0."""
     db.campaigns.insert_one(
         {
@@ -69,8 +69,7 @@ def immediate_transaction(callback):
 
 
 def test_move_north_commits_location_and_event():
-    client = mongomock.MongoClient()
-    db = client.dungeon
+    db = get_sqlite_connection(":memory:")
     repo = Repository(db, transaction_runner=immediate_transaction)
     setup_minimal_world(db)
 
@@ -110,8 +109,7 @@ def test_move_north_commits_location_and_event():
 
 
 def test_move_into_wall_is_rejected():
-    client = mongomock.MongoClient()
-    db = client.dungeon
+    db = get_sqlite_connection(":memory:")
     repo = Repository(db, transaction_runner=immediate_transaction)
     setup_minimal_world(db)
 

@@ -1,13 +1,13 @@
-"""MongoEngine exercises the production seam without an Atlas dependency."""
+"""SQLiteEngine exercises the production seam without an Atlas dependency."""
 
 from __future__ import annotations
 
-import mongomock
+from app.persistence.sqlite import get_sqlite_connection
 
 from app.api.schemas import TurnRequest
 from app.persistence.indexes import create_btree_indexes
 from app.persistence.repositories import Repository
-from app.services.mongo_engine import MongoEngine
+from app.services.sqlite_engine import SQLiteEngine
 from app.services.stubs import StubHarness
 from app.services.turn_orchestrator import TurnOrchestrator
 
@@ -17,12 +17,12 @@ class ImmediateTransactions:
         return callback(None)
 
 
-def _engine(database) -> MongoEngine:
-    return MongoEngine(Repository(database, transaction_runner=ImmediateTransactions()))
+def _engine(database) -> SQLiteEngine:
+    return SQLiteEngine(Repository(database, transaction_runner=ImmediateTransactions()))
 
 
-def test_mongo_engine_persists_world_and_replays_turns():
-    database = mongomock.MongoClient().dungeon_test
+def test_sqlite_engine_persists_world_and_replays_turns():
+    database = get_sqlite_connection(":memory:")
     create_btree_indexes(database)
     engine = _engine(database)
     orchestrator = TurnOrchestrator(engine=engine, harness=StubHarness())
@@ -60,8 +60,8 @@ def test_mongo_engine_persists_world_and_replays_turns():
     assert restarted.load_world_view(campaign.campaign_id, "player_1").player.cell_id == moved.player.cell_id
 
 
-def test_mongo_engine_list_campaigns_skips_campaign_without_player():
-    database = mongomock.MongoClient().dungeon_test
+def test_sqlite_engine_list_campaigns_skips_campaign_without_player():
+    database = get_sqlite_connection(":memory:")
     engine = _engine(database)
     missing_player = engine.create_campaign("Ada", seed=42)
     valid_campaign = engine.create_campaign("Bea", seed=43)

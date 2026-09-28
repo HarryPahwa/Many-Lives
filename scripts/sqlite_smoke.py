@@ -1,9 +1,9 @@
-"""End-to-end Atlas smoke test (TDD §20.2, §29).
+"""End-to-end SQLite durability smoke test (TDD §20.2, §29).
 
 Proves the demo's core claim against the real sandbox:
 create a campaign -> move -> reconnect with a fresh client -> state survives.
 
-    uv run python scripts/atlas_smoke.py
+    uv run python scripts/sqlite_smoke.py
 """
 
 from __future__ import annotations
@@ -15,13 +15,13 @@ from dotenv import load_dotenv
 from app.domain.parser import parse_fast_path
 from app.domain.rules import resolve_world_action
 from app.persistence.indexes import create_btree_indexes
-from app.persistence.mongo import close_mongo_client, get_database
+from app.persistence.sqlite import close_sqlite_connection, get_database
 from app.persistence.repositories import Repository
 from app.services.campaign_service import create_campaign
 from app.world.topology import Topology, parse_cell_key
 
 
-DIRECTION = {(0, -1): "north", (0, 1): "south", (1, 0): "east", (-1, 0): "west"}
+DIRECTION = {(0, 1): "north", (0, -1): "south", (1, 0): "east", (-1, 0): "west"}
 
 _CLEANUP_COLLECTIONS = ("campaigns", "cells", "entities", "events", "turns")
 
@@ -35,7 +35,7 @@ def main() -> None:
     load_dotenv()
     db = get_database()
     create_btree_indexes(db)
-    repo = Repository(db)  # NOTE: default runner = real with_transaction
+    repo = Repository(db)
 
     seed = 20260926
     created = create_campaign(repo, "Ada", seed=seed)
@@ -54,7 +54,7 @@ def main() -> None:
 
     intent = parse_fast_path(command, created.player_id)
     view = repo.load_world_view(cid, created.player_id, destination_cell_id=dest)
-    resolution = resolve_world_action(intent, view, turn_id="atlas-smoke-turn-1")
+    resolution = resolve_world_action(intent, view, turn_id="sqlite-smoke-turn-1")
     if not resolution.accepted:
         fail(f"move rejected: {resolution.reason}")
     repo.commit_turn(cid, created.player_id, resolution)
@@ -73,7 +73,7 @@ def main() -> None:
     )
 
     # --- the durability proof: a brand-new connection must see the same state ---
-    close_mongo_client()
+    close_sqlite_connection()
     fresh_db = get_database()
     fresh = Repository(fresh_db)
     player2 = fresh.get_entity(cid, created.player_id)
@@ -91,7 +91,7 @@ def main() -> None:
         fresh_db[collection].delete_many({"campaign_id": cid})
     print("4. cleaned up smoke campaign")
 
-    close_mongo_client()
+    close_sqlite_connection()
     print("SMOKE TEST PASSED")
 
 

@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-import mongomock
+from app.persistence.sqlite import get_sqlite_connection
 
 from app.domain.types import (
     ActionProposal,
@@ -75,9 +75,9 @@ def test_production_harness_marks_unavailable_vector_search_without_a_database()
     assert vector_search_ms is None
 
 
-def test_production_harness_uses_mongo_events_without_persistence_metadata():
+def test_production_harness_uses_sqlite_events_without_persistence_metadata():
     view = _view()
-    database = mongomock.MongoClient().dungeon_test
+    database = get_sqlite_connection(":memory:")
     event = Event(
         campaign_id=view.campaign_id,
         event_id="evt_1_0",

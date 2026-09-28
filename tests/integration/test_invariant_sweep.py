@@ -1,4 +1,4 @@
-import mongomock
+from app.persistence.sqlite import get_sqlite_connection
 
 from app.domain.rules import resolve_world_action
 from app.domain.types import ActionIntent, ActionType
@@ -16,7 +16,7 @@ class ImmediateTransactions:
 
 
 def test_fifty_committed_turns_have_zero_invariant_failures():
-    db = mongomock.MongoClient().dungeon
+    db = get_sqlite_connection(":memory:")
     create_btree_indexes(db)
     repository = Repository(db, transaction_runner=ImmediateTransactions())
     created = create_campaign(repository, "Ada", seed=505, campaign_id=CAMPAIGN_ID)
@@ -36,7 +36,7 @@ def test_fifty_committed_turns_have_zero_invariant_failures():
 
 
 def test_post_commit_checker_failure_does_not_report_committed_turn_as_failed(monkeypatch):
-    db = mongomock.MongoClient().dungeon
+    db = get_sqlite_connection(":memory:")
     create_btree_indexes(db)
     repository = Repository(db, transaction_runner=ImmediateTransactions())
     created = create_campaign(repository, "Ada", seed=506, campaign_id=CAMPAIGN_ID)

@@ -1,14 +1,13 @@
-"""Idempotent MongoDB index creation (TDD §9.2–§9.8, §12.5)."""
+"""Stable SQLite index catalog (TDD §9.2–§9.8, §12.5)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import time
-from typing import Any
 
-from pymongo import ASCENDING, DESCENDING
-from pymongo.database import Database
-from pymongo.operations import SearchIndexModel
+from app.persistence.sqlite import SQLiteDatabase
+
+ASCENDING = 1
+DESCENDING = -1
 
 
 @dataclass(frozen=True)
@@ -134,75 +133,6 @@ BTREE_INDEXES: tuple[IndexSpec, ...] = (
     ),
 )
 
-MEMORY_VECTOR_INDEX_NAME = "memories_vector"
-MEMORY_VECTOR_FILTER_PATHS = ("campaign_id", "entity_ids", "cell_id", "memory_type")
-
-
-def create_btree_indexes(db: Database) -> list[str]:
-    """Create all ordinary indexes and return their stable names."""
-    created: list[str] = []
-    for spec in BTREE_INDEXES:
-        name = db[spec.collection].create_index(
-            list(spec.keys), name=spec.name, unique=spec.unique
-        )
-        created.append(name)
-    return created
-
-
-def memory_vector_definition(dimensions: int) -> dict[str, list[dict[str, Any]]]:
-    """Build the Atlas Vector Search definition after validating its dimension."""
-    if isinstance(dimensions, bool) or not isinstance(dimensions, int) or dimensions <= 0:
-        raise ValueError("Embedding dimensions must be a positive integer")
-    return {
-        "fields": [
-            {
-                "type": "vector",
-                "path": "embedding",
-                "numDimensions": dimensions,
-                "similarity": "cosine",
-            },
-            *({"type": "filter", "path": path} for path in MEMORY_VECTOR_FILTER_PATHS),
-        ]
-    }
-
-
-def _find_vector_index(collection: Any) -> dict[str, Any] | None:
-    indexes = collection.list_search_indexes(name=MEMORY_VECTOR_INDEX_NAME)
-    return next(iter(indexes), None)
-
-
-def ensure_memory_vector_index(
-    db: Database,
-    dimensions: int,
-    *,
-    timeout_s: float = 60.0,
-    poll_interval_s: float = 1.0,
-) -> None:
-    """Create the memory vector index if absent and wait until it is queryable."""
-    if timeout_s < 0 or poll_interval_s < 0:
-        raise ValueError("Vector index timeout values cannot be negative")
-
-    definition = memory_vector_definition(dimensions)
-    collection = db.memories
-    current = _find_vector_index(collection)
-    if current is None:
-        collection.create_search_index(
-            model=SearchIndexModel(
-                definition=definition,
-                name=MEMORY_VECTOR_INDEX_NAME,
-                type="vectorSearch",
-            )
-        )
-    elif current.get("latestDefinition") not in (None, definition):
-        raise RuntimeError(
-            "Existing memories_vector definition does not match EMBEDDING_DIMS"
-        )
-
-    deadline = time.monotonic() + timeout_s
-    while True:
-        current = _find_vector_index(collection)
-        if current is not None and current.get("queryable") is True:
-            return
-        if time.monotonic() >= deadline:
-            raise TimeoutError("Timed out waiting for memories_vector to become queryable")
-        time.sleep(poll_interval_s)
+def create_btree_indexes(db: SQLiteDatabase) -> list[str]:
+    """Return stable names; physical indexes are initialized with the schema."""
+    return [spec.name for spec in BTREE_INDEXES]

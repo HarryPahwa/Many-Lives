@@ -2,9 +2,9 @@
 
 from copy import deepcopy
 
-import mongomock
+from app.persistence.sqlite import get_sqlite_connection
 import pytest
-from pymongo.errors import DuplicateKeyError
+from app.persistence.sqlite import DuplicateKeyError
 
 from app.domain.parser import parse_fast_path
 from app.domain.rules import resolve_action
@@ -27,7 +27,7 @@ class TransactionSpy:
 
 
 def build_campaign(seed: int = 20260926):
-    db = mongomock.MongoClient().dungeon
+    db = get_sqlite_connection(":memory:")
     create_btree_indexes(db)
     transactions = TransactionSpy()
     repository = Repository(db, transaction_runner=transactions)

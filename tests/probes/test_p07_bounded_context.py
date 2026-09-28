@@ -63,7 +63,8 @@ def seeded():
 def test_the_engine_reports_the_history_it_stored(seeded):
     _, engine, campaign_id = seeded
     stats = engine.history_stats(campaign_id)
-    assert stats["events"] == 600
+    # Campaign creation contributes one canonical spawn event.
+    assert stats["events"] == 601
     assert stats["memories"] == 60
     assert stats["stored_bytes"] > 100_000, "the history should be substantial"
 
@@ -81,7 +82,7 @@ def test_context_stays_bounded_as_history_grows(seeded):
     engine.append_events(
         campaign_id, list(script.synthetic_events(campaign_id, 600, 9_400, rng))
     )
-    assert engine.history_stats(campaign_id)["events"] == 10_000
+    assert engine.history_stats(campaign_id)["events"] == 10_001
 
     large = measure(engine, campaign_id, samples=1)
 

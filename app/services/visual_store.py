@@ -1,6 +1,6 @@
 """Persistence for room visuals (Room Visuals §8).
 
-Three interchangeable stores — memory, file, Mongo — chosen to match whatever
+Three interchangeable stores — memory, file, SQLite — chosen to match whatever
 durability the world engine already has. Nothing here touches campaign, cell,
 entity, event, memory or turn data (VIS-01); it owns only its own records and
 image bytes.
@@ -325,8 +325,8 @@ class FileVisualStore(_BaseStore):
             return removed
 
 
-class MongoVisualStore(_BaseStore):
-    """Atlas-backed store. Uses only its own two collections."""
+class SQLiteVisualStore(_BaseStore):
+    """SQLite-backed store. Uses only its own two tables."""
 
     def __init__(self, database: Any) -> None:
         self._db = database
@@ -374,8 +374,7 @@ class MongoVisualStore(_BaseStore):
         self, campaign_id: str, cell_id: str, stale_after_s: int = STALE_AFTER_S
     ) -> VisualRecord | None:
         self._ensure_indexes()
-        from pymongo import ReturnDocument
-        from pymongo.errors import DuplicateKeyError
+        from app.persistence.sqlite import DuplicateKeyError, ReturnDocument
 
         now = _now()
         cutoff = (now - timedelta(seconds=stale_after_s)).isoformat()
@@ -411,11 +410,8 @@ class MongoVisualStore(_BaseStore):
 
     def put_asset(self, asset: VisualAsset) -> None:
         self._ensure_indexes()
-        from bson.binary import Binary
-
         doc = asdict(asset)
         doc["_id"] = asset.asset_id
-        doc["data"] = Binary(asset.data)
         self._assets.replace_one({"_id": asset.asset_id}, doc, upsert=True)
 
     def get_asset(self, campaign_id: str, asset_id: str) -> VisualAsset | None:
@@ -467,17 +463,15 @@ def build_store() -> _BaseStore:
     choice = (settings.visual_store or "auto").lower()
 
     if choice == "auto":
-        if settings.mongodb_uri and settings.mongodb_db:
-            choice = "mongo"
-        elif os.getenv("STUB_STATE_FILE", "").strip():
+        if os.getenv("STUB_STATE_FILE", "").strip():
             choice = "file"
         else:
-            choice = "memory"
+            choice = "sqlite"
 
-    if choice == "mongo":
-        from app.persistence.mongo import get_database
+    if choice == "sqlite":
+        from app.persistence.sqlite import get_database
 
-        return MongoVisualStore(get_database())
+        return SQLiteVisualStore(get_database())
     if choice == "file":
         return FileVisualStore(settings.visuals_dir)
     return MemoryVisualStore()

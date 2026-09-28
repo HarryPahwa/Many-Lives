@@ -1,14 +1,14 @@
 [project]
 name = "many-lives"
 version = "0.1.0"
-description = "Agentic Dungeon Harness — a persistent-world agent harness (MongoDB hackathon)"
+description = "Agentic Dungeon Harness — a persistent-world agent harness"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115",
+    "fastapi==0.115.12",
+    "starlette==0.46.2",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
-    "pymongo>=4.18",
     "openai>=1.40",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
@@ -19,7 +19,6 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "httpx>=0.27",
-    "mongomock>=4.3.0",
     "pytest-playwright>=0.5",
 ]
 
@@ -40,4 +39,3 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-

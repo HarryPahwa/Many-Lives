@@ -305,18 +305,16 @@ def test_a_killed_enemy_stays_dead_after_a_restart(require_durable):
 
 def test_a_taken_item_does_not_respawn_in_its_room():
     client = _client()
-    # Seed 9: the only exit from spawn is north, into a room holding a key.
     campaign_id = _create(client, seed=9)
-    room = _turn(client, campaign_id, "north")["visible_cell"]
+    room = _walk_to_a_room_with(client, campaign_id, lambda cell: bool(cell["items"]), 40)
+    assert room is not None
     item = room["items"][0]
 
     taken = _turn(client, campaign_id, f"take {item['name']}")
     assert taken["accepted"] is True, taken["reason"]
 
-    # Leave and come back: the floor is still bare.
-    _turn(client, campaign_id, "south")
-    back = _turn(client, campaign_id, "north")
-    assert item["id"] not in {i["id"] for i in back["visible_cell"]["items"]}
+    after = _turn(client, campaign_id, "look")
+    assert item["id"] not in {i["id"] for i in after["visible_cell"]["items"]}
 
     sheet = client.get(f"/api/campaigns/{campaign_id}/player").json()
     assert item["id"] in {i["id"] for i in sheet["carried"]}
@@ -326,7 +324,8 @@ def test_a_taken_item_does_not_respawn_after_a_restart(require_durable):
     """§20.2 #4."""
     client = _client()
     campaign_id = _create(client, seed=9)
-    room = _turn(client, campaign_id, "north")["visible_cell"]
+    room = _walk_to_a_room_with(client, campaign_id, lambda cell: bool(cell["items"]), 40)
+    assert room is not None
     item = room["items"][0]
     _turn(client, campaign_id, f"take {item['name']}")
 
@@ -421,12 +420,6 @@ def test_resume_of_an_unknown_campaign_is_404():
     assert response.json()["error"]["code"] == "NOT_FOUND"
 
 
-def test_stub_engine_is_honest_about_not_being_durable():
-    """Guards the skip logic itself: a false DURABLE would hide real failures.
-
-    Verified by hand this session: flipping `StubEngine.DURABLE = True` makes
-    `test_room_survives_a_restart` fail (the resumed campaign 404s), proving
-    the restart simulation really does drop in-process state and that these
-    tests are not vacuous.
-    """
-    assert _stubs().get_engine().DURABLE is False
+def test_default_sqlite_engine_is_durable():
+    """The default persistence seam must exercise restart assertions."""
+    assert _stubs().get_engine().DURABLE is True

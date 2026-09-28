@@ -1,4 +1,4 @@
-import mongomock
+from app.persistence.sqlite import get_sqlite_connection
 
 from app.domain.types import (
     EntityDressing,
@@ -64,7 +64,7 @@ class FakeDresser:
 
 
 def repository():
-    db = mongomock.MongoClient().dungeon
+    db = get_sqlite_connection(":memory:")
     create_btree_indexes(db)
     return db, Repository(db, transaction_runner=ImmediateTransactions())
 

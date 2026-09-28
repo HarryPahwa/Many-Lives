@@ -118,7 +118,7 @@ class EngineResolution:
     outcome_summary: str = ""
     rolls: list[Roll] = field(default_factory=list)
     rejected_effects: list[dict[str, Any]] = field(default_factory=list)
-    # Private adapter state. The Mongo engine resolves against an immutable
+    # Private adapter state. The SQLite engine resolves against an immutable
     # persistence snapshot, then binds the client turn_id when it commits.
     pending: Any = field(default=None, repr=False)
 
@@ -431,7 +431,7 @@ _ROOM_NAMES = [
 
 
 class StubEngine:
-    """# STUB(A) — everything A owns, in a dict. No Mongo, no transactions.
+    """# STUB(A) — everything A owns, in a dict. No database, no transactions.
 
     Replaced by `services/campaign_service.py` + `persistence/repositories.py`.
     """
@@ -1325,23 +1325,13 @@ class FileBackedEngine(StubEngine):
 
 
 def _build_engine() -> EnginePort:
-    """Choose an engine. A: return your real one from here.
-
-    Order of preference once A's engine exists:
-      1. A's Atlas-backed engine when MONGODB_URI is configured;
-      2. FileBackedEngine when STUB_STATE_FILE is set (durable, no Atlas);
-      3. the in-memory StubEngine.
-    """
-    from app.config import get_settings
-
-    if get_settings().mongodb_uri:
-        from app.services.mongo_engine import MongoEngine
-
-        return MongoEngine.from_environment()
+    """Choose the file compatibility seam or the canonical SQLite engine."""
     state_file = os.getenv("STUB_STATE_FILE", "").strip()
     if state_file:
         return FileBackedEngine(state_file)
-    return StubEngine()
+    from app.services.sqlite_engine import SQLiteEngine
+
+    return SQLiteEngine.from_environment()
 
 
 _ENGINE: EnginePort = _build_engine()
@@ -1357,12 +1347,9 @@ def _build_harness() -> HarnessPort:
     from app.harness.model_client import get_model_client
     from app.services.harness_adapter import ProductionHarness
 
-    settings = get_settings()
-    if settings.mongodb_uri:
-        from app.persistence.mongo import get_database
+    from app.persistence.sqlite import get_database
 
-        return ProductionHarness(client=get_model_client(), db=get_database())
-    return ProductionHarness(client=get_model_client())
+    return ProductionHarness(client=get_model_client(), db=get_database())
 
 
 _HARNESS: HarnessPort = _build_harness()
@@ -1371,10 +1358,8 @@ _HARNESS: HarnessPort = _build_harness()
 def get_engine() -> EnginePort:
     """Return the active engine (Developer A's seam).
 
-    A: when `services/campaign_service.py` + `persistence/repositories.py` are
-    ready, construct the real adapter in `_build_engine()` (gated on
-    `settings.mongodb_uri`). Nothing else in `api/` or `turn_orchestrator.py`
-    changes.
+    SQLite is the default canonical engine. Nothing else in `api/` or
+    `turn_orchestrator.py` depends on the persistence implementation.
     """
     return _ENGINE
 
@@ -1415,5 +1400,17 @@ def reset_stubs() -> None:
                 path.unlink(missing_ok=True)
             except OSError:  # pragma: no cover - best effort
                 pass
+    else:
+        from app.config import get_settings
+        from app.persistence.sqlite import close_sqlite_connection
+
+        path = get_settings().sqlite_db_path
+        close_sqlite_connection()
+        if path != ":memory:":
+            for candidate in (Path(path), Path(f"{path}-wal"), Path(f"{path}-shm")):
+                try:
+                    candidate.unlink(missing_ok=True)
+                except OSError:  # pragma: no cover - best effort
+                    pass
     set_engine(_build_engine())
     set_harness(_build_harness())

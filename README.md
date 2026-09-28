@@ -172,17 +172,12 @@ With `VISUAL_STORE=file` (the default when `STUB_STATE_FILE` is set):
 .state/demo.json                               the world itself
 ```
 
-Both directories are git-ignored. `VISUAL_STORE=mongo` puts the same records in
-the `room_visuals` and `visual_assets` collections; `memory` keeps them only for
-the life of the process.
+Both directories are git-ignored. `VISUAL_STORE=sqlite` puts the same records in
+the `room_visuals` and `visual_assets` tables; `memory` keeps them only for the
+life of the process.
 
-Images survive a restart in the file and Mongo stores: resume a campaign and the
+Images survive a restart in the file and SQLite stores: resume a campaign and the
 same asset id and the same bytes come back, with no regeneration.
-
-One gap worth knowing: the Atlas engine does not implement the optional
-`visual_scene` read, so with `MONGODB_URI` set the service falls back to the
-world view. Images still generate and persist, but health-band changes will not
-mark one out of date.
 
 ## Verifying it works
 
@@ -292,7 +287,7 @@ app/
   domain/       # A — pure rules engine, types, RNG (no I/O)
   world/        # A — topology, placement, room planning, fallback
   harness/      # B — model client, context, adjudicator, narrator, memory, eval
-  persistence/  # A — Mongo client, repositories, transactions, indexes
+  persistence/  # A — SQLite lifecycle, repositories, transactions, indexes
   services/     # campaign / room services, turn orchestrator (integration seam)
   api/          # C — FastAPI routers and schemas
   ui/static/    # C — plain HTML/CSS/JS

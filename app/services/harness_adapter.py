@@ -35,7 +35,7 @@ _logger = logging.getLogger("many_lives.harness")
 
 
 def _event_from_document(document: Mapping[str, Any]) -> Event:
-    """Validate the domain fields of a MongoDB event document."""
+    """Validate the domain fields of a persisted event document."""
     return Event.model_validate(
         {field: document[field] for field in Event.model_fields if field in document}
     )
@@ -73,7 +73,7 @@ def _domain_events(events: list[dict[str, Any]] | None) -> list[Event] | None:
 class _WorldViewContext(ContextView):
     """Context read model available from C's current integration seam.
 
-    A durable engine can additionally supply Mongo through ``ProductionHarness``
+    A durable engine can additionally supply SQLite through ``ProductionHarness``
     so recent exact events and vector memories are fetched campaign-scoped.
     """
 

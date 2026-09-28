@@ -74,13 +74,13 @@ def test_failed_check_commits_check_without_success_effects():
 
 
 def test_seam_resolution_maps_check_rolls_to_wire_rolls():
-    from app.services.mongo_engine import MongoEngine
+    from app.services.sqlite_engine import SQLiteEngine
 
     view = feature_view()
     params = {"check_kind": "SKILL", "suggested_difficulty": 10, "approach_modifier": 0}
     intent = interact(unlit(), params=params)
     raw = resolve_world_action(intent, view, turn_id="t7")
-    seam = MongoEngine._seam_resolution(raw, pending=(view, intent))
+    seam = SQLiteEngine._seam_resolution(raw, pending=(view, intent))
     assert [(roll.purpose, roll.sides) for roll in seam.rolls] == [("check", 20)]
 
 

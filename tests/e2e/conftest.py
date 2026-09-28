@@ -73,24 +73,24 @@ def browser_available(request) -> bool:
 def live_server(tmp_path_factory) -> str:
     """A uvicorn on a random port, with a durable state file of its own."""
     port = _free_port()
-    state_file = tmp_path_factory.mktemp("e2e-state") / "world.json"
+    database_path = tmp_path_factory.mktemp("e2e-state") / "world.db"
 
     env = {
         **os.environ,
-        "STUB_STATE_FILE": str(state_file),
+        "STUB_STATE_FILE": "",
+        "SQLITE_DB_PATH": str(database_path),
         "DEBUG_ENDPOINTS": "true",
         "USE_FAKE_MODELS": "true",
         "PYTHONIOENCODING": "utf-8",
-        # Never let a developer's real cluster or speech account be reached
-        # from a browser test. pydantic-settings prefers these over .env.
-        "MONGODB_URI": "",
+        # Never let a developer's real speech account be reached from a browser
+        # test. pydantic-settings prefers this over .env.
         "ELEVENLABS_API_KEY": "",
     }
     # Log to a FILE, never to a pipe. uvicorn logs every request, and an
     # undrained subprocess pipe fills its OS buffer (~64 KB) and then blocks
     # the server forever — which looks exactly like a mysterious mid-suite
     # hang. Learned the hard way.
-    log_path = state_file.parent / "uvicorn.log"
+    log_path = database_path.parent / "uvicorn.log"
     with log_path.open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(port)],

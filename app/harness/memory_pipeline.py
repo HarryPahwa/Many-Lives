@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import struct
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any
-
-from bson import Binary
 
 from app.domain.types import Event, EventType, MemoryStatus, MemoryType
 from app.harness.model_client import ModelClient
@@ -58,12 +55,13 @@ def memory_text(events: list[Event], names: dict[str, str]) -> str:
     return f"On turn {event.turn_sequence} in {event.cell_id}, {subject} {detail.lower()}."
 
 
-def _binary(vector: list[float]) -> Binary:
-    return Binary(struct.pack(f"<{len(vector)}f", *vector), subtype=0)
+def _binary(vector: list[float]) -> list[float]:
+    """Return a JSON-native embedding for SQLite storage."""
+    return [float(value) for value in vector]
 
 
-def decode_embedding(value: Binary) -> list[float]:
-    return list(struct.unpack(f"<{len(value) // 4}f", bytes(value)))
+def decode_embedding(value: list[float]) -> list[float]:
+    return [float(item) for item in value]
 
 
 def _as_event(document: dict[str, Any]) -> Event:
@@ -135,7 +133,7 @@ def extract_memories(campaign_id: str, event_ids: list[str], *, db, client: Mode
 
 
 class MemoryWorker:
-    """Small in-process queue; callers opt in only with canonical Mongo events."""
+    """Small in-process queue for canonical SQLite events."""
 
     def __init__(self, db, client: ModelClient) -> None:
         self.db = db

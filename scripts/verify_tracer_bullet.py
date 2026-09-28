@@ -1,23 +1,21 @@
-"""Manual verification: run the slice and print the raw Mongo documents.
+"""Manual verification: run the slice and print the raw SQLite documents.
 
 Self-contained (no imports from the test package). Usage:
 
     uv run python scripts/verify_tracer_bullet.py
 """
 
-import mongomock
-from pymongo.database import Database
-
 from app.domain.parser import parse_fast_path
 from app.domain.rules import resolve_action
 from app.persistence.repositories import Repository
+from app.persistence.sqlite import SQLiteDatabase, get_sqlite_connection
 from app.world.topology import MINIMAL_TOPOLOGY
 
 CAMPAIGN_ID = "cmp_tracer0001"
 PLAYER_ID = "player_1"
 
 
-def setup_minimal_world(db: Database) -> None:
+def setup_minimal_world(db: SQLiteDatabase) -> None:
     db.campaigns.insert_one(
         {
             "_id": CAMPAIGN_ID,
@@ -39,8 +37,7 @@ def setup_minimal_world(db: Database) -> None:
 
 
 def main() -> None:
-    client = mongomock.MongoClient()
-    db = client.dungeon
+    db = get_sqlite_connection(":memory:")
     repo = Repository(db)
     setup_minimal_world(db)
 

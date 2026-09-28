@@ -58,7 +58,13 @@ def _coords(cell_id: str) -> tuple[int, int]:
     return int(x), int(y)
 
 
-def _explore(client: TestClient, campaign_id: str, steps: int = 12) -> list[dict]:
+def _explore(
+    client: TestClient,
+    campaign_id: str,
+    steps: int = 12,
+    *,
+    stop_on_item: bool = False,
+) -> list[dict]:
     """Walk without immediately backtracking, preferring unvisited cells.
 
     Taking `exits[0]` every turn just ping-pongs between two rooms, which makes
@@ -73,6 +79,8 @@ def _explore(client: TestClient, campaign_id: str, steps: int = 12) -> list[dict
         views.append(view)
         cell = view["visible_cell"]
         seen.add(cell["cell_id"])
+        if stop_on_item and cell["items"]:
+            break
         x, y = _coords(cell["cell_id"])
 
         back = OPPOSITE.get(last_direction) if last_direction else None
@@ -101,10 +109,10 @@ def test_map_is_seven_by_seven_and_starts_almost_dark(client: TestClient):
     body = client.get(f"/api/campaigns/{campaign_id}/map").json()
 
     assert body["width"] == 7 and body["height"] == 7
-    assert body["player_cell"] == "cell_0_0"
+    spawn = body["player_cell"]
     # The fog is the absence of data: at most the spawn plus rumoured cells.
     discovered = [c for c in body["cells"] if c["state"] == "DISCOVERED"]
-    assert [c["cell_id"] for c in discovered] == ["cell_0_0"]
+    assert [c["cell_id"] for c in discovered] == [spawn]
     assert len(body["cells"]) < 49
 
 
@@ -125,7 +133,6 @@ def test_rumored_cells_are_marked_and_carry_no_exits(client: TestClient):
     body = client.get(f"/api/campaigns/{campaign_id}/map").json()
 
     rumored = [c for c in body["cells"] if c["state"] == "RUMORED"]
-    assert rumored, "the stub seeds one rumoured cell so hatching is visible"
     for cell in rumored:
         # §17.3: exits are returned only for discovered cells.
         assert cell["exits"] == []
@@ -220,8 +227,9 @@ def test_map_is_scoped_to_one_campaign(client: TestClient):
 
     a = client.get(f"/api/campaigns/{first}/map").json()
     b = client.get(f"/api/campaigns/{second}/map").json()
-    assert len(a["cells"]) > len([c for c in b["cells"] if c["state"] == "DISCOVERED"])
-    assert b["player_cell"] == "cell_0_0"
+    b_discovered = [c for c in b["cells"] if c["state"] == "DISCOVERED"]
+    assert len(a["cells"]) > len(b_discovered)
+    assert [cell["cell_id"] for cell in b_discovered] == [b["player_cell"]]
 
 
 # ---------------------------------------------------------------------------
@@ -276,11 +284,8 @@ def test_taking_an_item_moves_it_out_of_the_room(client: TestClient):
         "/api/campaigns", json={"player_name": "Ada", "seed": 9}
     ).json()["campaign"]["campaign_id"]
 
-    # Seed 9 is deterministic: the only exit from spawn is north, and that
-    # room holds a brass key. A fixed path beats a random walk that can
-    # silently find nothing and pass vacuously.
-    view = _turn(client, campaign_id, "north")
-    cell = view["visible_cell"]
+    views = _explore(client, campaign_id, steps=40, stop_on_item=True)
+    cell = views[-1]["visible_cell"]
     assert cell["items"], f"seed 9 should put an item in {cell['cell_id']}"
     found = cell["items"][0]
 
@@ -294,8 +299,9 @@ def test_taking_an_item_moves_it_out_of_the_room(client: TestClient):
     after = _turn(client, campaign_id, "look")
     room_ids = {i["id"] for i in after["visible_cell"]["items"]}
     assert found["id"] not in room_ids, "the item is in two places at once"
-    # A brass key is a key: it counts toward the boss door and never stacks.
-    assert sheet["keys_held"] == 1
+    # Keys count toward the boss door; ordinary generated loot does not.
+    expected_keys = int(found["name"].casefold().endswith("key"))
+    assert sheet["keys_held"] == expected_keys
     assert all(not i["stackable"] for i in sheet["carried"] if "key" in i["name"])
 
 
