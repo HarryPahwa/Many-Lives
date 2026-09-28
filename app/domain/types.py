@@ -56,6 +56,24 @@ class CharacterStatus(StrEnum):
     DEAD = "DEAD"
 
 
+class PhysicalCondition(StrEnum):
+    BLEEDING = "BLEEDING"
+    POISONED = "POISONED"
+    BLINDED = "BLINDED"
+    STUNNED = "STUNNED"
+    CRIPPLED = "CRIPPLED"
+    BURNING = "BURNING"
+    EXHAUSTED = "EXHAUSTED"
+
+
+class MentalCondition(StrEnum):
+    CHARMED = "CHARMED"
+    FRIGHTENED = "FRIGHTENED"
+    CONFUSED = "CONFUSED"
+    ENRAGED = "ENRAGED"
+    TERRIFIED = "TERRIFIED"
+
+
 class EventType(StrEnum):
     CAMPAIGN_CREATED = "CAMPAIGN_CREATED"
     PLAYER_SPAWNED = "PLAYER_SPAWNED"
@@ -411,6 +429,8 @@ class SnapshotEntity(BaseModel):
     disposition: str | None = None
     location: str | None = None
     state: dict[str, str] = Field(default_factory=dict)
+    physical_conditions: list[str] = Field(default_factory=list)
+    mental_conditions: list[str] = Field(default_factory=list)
 
 
 class CellSnapshot(BaseModel):
@@ -436,6 +456,8 @@ class PlayerSummary(BaseModel):
     max_mp: int
     level: int
     equipment: list[str] = Field(default_factory=list)
+    physical_conditions: list[str] = Field(default_factory=list)
+    mental_conditions: list[str] = Field(default_factory=list)
 
 
 class SocialContext(BaseModel):

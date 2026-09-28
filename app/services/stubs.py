@@ -315,6 +315,9 @@ class _Character:
     disposition: str | None = None
     hp: int = 8
     max_hp: int = 8
+    entity_type: str = "NPC"
+    physical_conditions: list[str] = field(default_factory=list)
+    mental_conditions: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -601,7 +604,13 @@ class StubEngine:
             features=list(cell.features),
             characters=[
                 VisibleCharacter(
-                    id=c.id, name=c.name, status=c.status, disposition=c.disposition
+                    id=c.id,
+                    name=c.name,
+                    status=c.status,
+                    disposition=c.disposition,
+                    entity_type=c.entity_type,
+                    physical_conditions=list(c.physical_conditions),
+                    mental_conditions=list(c.mental_conditions),
                 )
                 for c in cell.characters
             ],
@@ -691,6 +700,63 @@ class StubEngine:
         if cmd == "attack" and arg:
             return Intent("ATTACK", actor_id, targets=[arg])
         return None
+
+    def resolve_mutation_bundle(
+        self, view: WorldView, bundle: MutationBundle, turn_id: str = "pending"
+    ) -> EngineResolution:
+        from app.services.stubs import EngineResolution
+        from app.domain.rules import Resolution
+        from app.domain.mutation_validator import apply_mutation_bundle
+        from app.persistence.views import WorldView as PersistenceWorldView, freeze
+
+        camp = self._require(view.campaign_id)
+        # Construct WorldSnapshot-like structure for stub
+        player_dict = {
+            "id": camp.player_id,
+            "stats": {"hp": camp.hp, "mp": camp.mp, "max_hp": camp.max_hp, "max_mp": camp.max_mp},
+            "version": 0,
+        }
+        current_cell = camp.cells.get(camp.player_cell)
+        cell_dict = {
+            "id": camp.player_cell,
+            "version": 0,
+        }
+        characters = [
+            {"id": c.id, "name": c.name, "character": {"hp": c.hp, "max_hp": c.max_hp}, "version": 0}
+            for c in (current_cell.characters if current_cell else [])
+        ]
+        items = [
+            {"id": i.id, "name": i.name, "where": i.where, "version": 0}
+            for i in (current_cell.items if current_cell else [])
+        ]
+        snapshot = freeze(
+            PersistenceWorldView(
+                campaign={"id": camp.campaign_id, "turn_count": camp.current_turn, "version": 0},
+                player=player_dict,
+                current_cell=cell_dict,
+                destination_cell=None,
+                characters=tuple(characters),
+                items=tuple(items),
+                container_items=(),
+                config={},
+                owned_items=(),
+            )
+        )
+        raw = apply_mutation_bundle(snapshot, bundle, turn_id=turn_id)
+        if not raw.accepted:
+            return EngineResolution(accepted=False, reason=raw.reason)
+
+        effects = []
+        for m in bundle.mutations:
+            effects.append(m.model_dump(mode="json"))
+
+        return EngineResolution(
+            accepted=True,
+            effects=effects,
+            event_types=[e.type.value for e in raw.events],
+            outcome_summary=raw.outcome_summary,
+            pending=(snapshot, bundle),
+        )
 
     # ---- resolve (§7.1 step 4) ----
 
@@ -818,29 +884,40 @@ class StubEngine:
         seq = camp.current_turn + 1
 
         for effect in resolution.effects:
-            kind = effect.get("type")
-            if kind == "MOVE_ENTITY":
-                target = effect["to"]
-                camp.player_cell = target
-                if not camp.cells[target].generated:
-                    self.generate_room(camp.campaign_id, target)
-                camp.discovered.add(target)
-                camp.rumored.discard(target)
-            elif kind == "TRANSFER_ITEM":
+            kind = effect.get("type") or effect.get("kind")
+            if kind in {"MOVE_ENTITY", "MOVE"}:
+                target = effect.get("to") or effect.get("target_cell_id")
+                if target:
+                    camp.player_cell = target
+                    if not camp.cells[target].generated:
+                        self.generate_room(camp.campaign_id, target)
+                    camp.discovered.add(target)
+                    camp.rumored.discard(target)
+            elif kind in {"TRANSFER_ITEM", "TRANSFER_ENTITY"}:
                 cell = camp.cells[camp.player_cell]
-                item = next((i for i in cell.items if i.id == effect["target_id"]), None)
+                target_id = effect.get("target_id") or effect.get("entity_id")
+                item = next((i for i in cell.items if i.id == target_id), None)
                 if item is not None:
                     cell.items.remove(item)
                     item.where = "inventory"
                     camp.inventory.append(item)
-            elif kind == "DAMAGE":
-                for cell in camp.cells.values():
-                    for ch in cell.characters:
-                        if ch.id == effect["target_id"]:
-                            ch.hp = max(0, ch.hp - int(effect["amount"]))
-                            if ch.hp == 0:
-                                ch.status = "DEAD"
-                                ch.disposition = None
+            elif kind in {"DAMAGE", "MUTATE_ATTRIBUTE"}:
+                target_id = effect.get("target_id")
+                path = effect.get("path")
+                val = effect.get("value") or effect.get("amount")
+                if path == "stats.hp" or kind == "DAMAGE":
+                    for cell in camp.cells.values():
+                        for ch in cell.characters:
+                            if ch.id == target_id:
+                                if effect.get("op") == "ADD":
+                                    ch.hp = max(0, min(ch.max_hp, ch.hp + int(val)))
+                                elif effect.get("op") == "SET":
+                                    ch.hp = max(0, min(ch.max_hp, int(val)))
+                                else:
+                                    ch.hp = max(0, ch.hp - int(val))
+                                if ch.hp == 0:
+                                    ch.status = "DEAD"
+                                    ch.disposition = None
             elif kind == "REANIMATE":
                 for cell in camp.cells.values():
                     for ch in cell.characters:

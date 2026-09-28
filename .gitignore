@@ -36,3 +36,5 @@ logs/
 
 # Room visual assets (file store)
 .visuals/
+logs
+.pi

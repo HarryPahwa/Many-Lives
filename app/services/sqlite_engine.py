@@ -21,6 +21,7 @@ from app.api.schemas import (
     VisibleFeature,
     VisibleItem,
 )
+from app.domain.mutations import MutationBundle
 from app.domain.parser import parse_fast_path
 from app.domain.rules import DIRECTION_OFFSETS, Resolution, resolve_world_action
 from app.domain.types import ActionIntent
@@ -95,6 +96,20 @@ class SQLiteEngine:
             effects_on_success=list(parsed.effects_on_success),
         )
 
+    def resolve_mutation_bundle(
+        self, view: WorldView, bundle: MutationBundle, turn_id: str = "pending"
+    ) -> EngineResolution:
+        from app.services.stubs import EngineResolution
+
+        try:
+            snapshot = self.repository.load_world_view(view.campaign_id, view.player_id)
+        except (ValueError, StateNotFoundError) as exc:
+            return EngineResolution(accepted=False, reason=str(exc))
+
+        from app.domain.mutation_validator import apply_mutation_bundle
+        raw = apply_mutation_bundle(snapshot, bundle, turn_id=turn_id)
+        return self._seam_resolution(raw, pending=(snapshot, bundle))
+
     def resolve(self, view: WorldView, intent: Intent) -> EngineResolution:
         from app.services.stubs import EngineResolution
 
@@ -122,8 +137,14 @@ class SQLiteEngine:
         pending = resolution.pending
         if not isinstance(pending, tuple) or len(pending) != 2:
             raise ValueError("SQLite resolutions must be committed by their originating engine")
-        snapshot, action = pending
-        raw = resolve_world_action(action, snapshot, turn_id=turn_id)
+        snapshot, payload = pending
+        if isinstance(payload, ActionIntent):
+            raw = resolve_world_action(payload, snapshot, turn_id=turn_id)
+        elif isinstance(payload, MutationBundle):
+            from app.domain.mutation_validator import apply_mutation_bundle
+            raw = apply_mutation_bundle(snapshot, payload, turn_id=turn_id)
+        else:
+            raise ValueError(f"Unknown payload type for commit: {type(payload)}")
         if not raw.accepted:
             raise ValueError("Accepted resolution became rejected before commit")
         self.repository.commit_turn(
@@ -223,6 +244,8 @@ class SQLiteEngine:
             armor=equipped.get("ARMOR"),
             keys_held=sum(1 for item in carried if item.name.casefold().endswith("key")),
             keys_required=snapshot.campaign["config"]["keys_required"],
+            physical_conditions=list(character.get("physical_conditions", ())),
+            mental_conditions=list(character.get("mental_conditions", ())),
         )
 
     def history_stats(self, campaign_id: str) -> dict[str, int]:
@@ -341,6 +364,8 @@ class SQLiteEngine:
                 level=player["character"]["level"], xp=player["character"]["xp"],
                 pending_level_ups=player["character"]["pending_level_ups"],
                 cell_id=player["location"]["ref_id"],
+                physical_conditions=list(player["character"].get("physical_conditions", ())),
+                mental_conditions=list(player["character"].get("mental_conditions", ())),
             ),
             visible_cell=self._visible_cell(snapshot),
             exits=self._exits(campaign, snapshot.current_cell["cell_id"]),
@@ -369,6 +394,9 @@ class SQLiteEngine:
                 id=entity["entity_id"], name=entity["name"],
                 status=entity["character"]["status"],
                 disposition=self._visible_disposition(entity, player_id),
+                entity_type=entity.get("entity_type", "NPC"),
+                physical_conditions=list(entity["character"].get("physical_conditions", ())),
+                mental_conditions=list(entity["character"].get("mental_conditions", ())),
             )
             for entity in snapshot.characters if entity["entity_id"] != player_id
             and entity["location"].get("ref_id") == cell["cell_id"]

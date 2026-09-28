@@ -198,6 +198,8 @@ def _materialize(
                     "assisting": False,
                     "disposition": {},
                     "knowledge": knowledge,
+                    "physical_conditions": [],
+                    "mental_conditions": [],
                 },
                 "version": 0,
                 "created_turn": 0,

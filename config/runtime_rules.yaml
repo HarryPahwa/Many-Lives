@@ -1,26 +1,5 @@
-# Game balance defaults from TDD v1.1. Values marked [DEF] may be tuned, but
-# changes must be recorded in the commit/PR. Structural [D] rules remain code
-# invariants and must not be overridden through this file.
-
-world:
-  width: 7
-  height: 7
-  keys_required: 3
-  key_reservations: 6
-  min_spawn_boss_distance: 5
-  extra_edge_probability: 0.2
-  boss_placement_attempts: 10
-
-player:
-  max_hp: 20
-  max_mp: 6
-  attack: 5
-  defense: 2
-  speed: 4
-  dodge_pct: 10
-  dodge_pct_cap: 40
-  skill: 3
-  carried_slots: 6
+# Runtime rules and adjudication balance parameters.
+# Used by Jev, combat, checks, inventory, and disposition engines.
 
 level_up:
   max_hp: 5
@@ -118,42 +97,9 @@ features:
     duration_turns: 3
     damage_per_turn: 1
 
-generation:
-  archetype_weights:
-    EMPTY: 20
-    ENEMY: 25
-    NPC: 15
-    ITEM: 15
-    ENEMY_WITH_ITEM: 10
-    NPC_WITH_ITEM: 10
-    ENEMY_AND_NPC: 5
-  key_carrier_weights:
-    CONTAINER: 40
-    ENEMY: 35
-    NPC: 25
-  loot_weights:
-    WEAPON: 40
-    ARMOR: 30
-    MANA_POTION: 20
-    TRINKET: 10
-  character_stats:
-    1: {level: 1, hp: 8, attack: 3, defense: 0, speed: 3, dodge_pct: 5, skill: 1}
-    2: {level: 2, hp: 12, attack: 4, defense: 1, speed: 4, dodge_pct: 5, skill: 2}
-    3: {level: 3, hp: 16, attack: 5, defense: 2, speed: 4, dodge_pct: 10, skill: 2}
-    4: {level: 4, hp: 22, attack: 6, defense: 3, speed: 5, dodge_pct: 10, skill: 3}
-    5: {level: 5, hp: 28, attack: 7, defense: 3, speed: 5, dodge_pct: 15, skill: 3}
-    boss: {level: 7, hp: 60, attack: 8, defense: 4, speed: 5, dodge_pct: 10, skill: 4}
-  npc_adjustments:
-    attack: -1
-    dodge_pct: -5
-    minimum: 0
-  spellbook:
-    minimum_tier: 3
-    placement_probability: 0.1
-  hidden_item_concealment_dc_base: 10
-  room_feature_range: [2, 5]
-  dresser_retries: 2
-  generation_claim_timeout_seconds: 60
+candidate_generation:
+  candidate_count: 3
+  fallback_timeout_seconds: 5.0
 
 context:
   max_context_tokens: 3000

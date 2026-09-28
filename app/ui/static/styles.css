@@ -403,6 +403,13 @@ body.hide-trace .log-trace {
   color: var(--muted);
 }
 
+.char-conditions {
+  margin: 0 0 10px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+  color: #e09f58;
+}
+
 .char-pending {
   margin: 0 0 10px;
   font-size: 12px;

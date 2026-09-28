@@ -117,6 +117,8 @@ class PlayerState(_Wire):
     xp: int
     pending_level_ups: int = 0
     cell_id: str
+    physical_conditions: list[str] = Field(default_factory=list)
+    mental_conditions: list[str] = Field(default_factory=list)
 
 
 class VisibleFeature(_Wire):
@@ -130,6 +132,9 @@ class VisibleCharacter(_Wire):
     name: str
     status: str
     disposition: str | None = None
+    entity_type: str = "NPC"
+    physical_conditions: list[str] = Field(default_factory=list)
+    mental_conditions: list[str] = Field(default_factory=list)
 
 
 class VisibleItem(_Wire):
@@ -248,6 +253,8 @@ class PlayerSheet(_Wire):
     carried_slots: int = 6
     keys_held: int = 0
     keys_required: int = 3
+    physical_conditions: list[str] = Field(default_factory=list)
+    mental_conditions: list[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------

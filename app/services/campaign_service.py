@@ -188,6 +188,8 @@ def create_campaign(
             "assisting": False,
             "disposition": {},
             "knowledge": [],
+            "physical_conditions": [],
+            "mental_conditions": [],
         },
         "player": {
             "spawn_cell_id": placement.spawn_cell_id,

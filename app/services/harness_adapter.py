@@ -94,9 +94,11 @@ class _WorldViewContext(ContextView):
             {
                 "entity_id": character.id,
                 "name": character.name,
-                "entity_type": "NPC",
+                "entity_type": character.entity_type,
                 "status": character.status,
                 "disposition": character.disposition,
+                "physical_conditions": character.physical_conditions,
+                "mental_conditions": character.mental_conditions,
             }
             for character in cell.characters
         ]
@@ -199,6 +201,8 @@ def _snapshot(view: WorldView) -> CellSnapshot:
                 kind="CHARACTER",
                 status=character.status,
                 disposition=character.disposition,
+                physical_conditions=character.physical_conditions,
+                mental_conditions=character.mental_conditions,
             )
             for character in cell.characters
         ],
@@ -248,6 +252,8 @@ def _player_summary(view: WorldView) -> PlayerSummary:
         mp=player.mp,
         max_mp=player.max_mp,
         level=player.level,
+        physical_conditions=player.physical_conditions,
+        mental_conditions=player.mental_conditions,
     )
 
 
@@ -264,7 +270,7 @@ class ProductionHarness:
 
     def classify(self, text: str, view: WorldView) -> str:
         visible_entities = [
-            {"name": character.name, "entity_type": "NPC", "disposition": character.disposition}
+            {"name": character.name, "entity_type": character.entity_type, "disposition": character.disposition}
             for character in view.visible_cell.characters
         ]
         return select_action_class(text, {"visible_entities": visible_entities}).value

@@ -132,9 +132,15 @@ function renderRoom(cell) {
   };
 
   addList("Exits", cell.exits, (e) => e);
-  addList("Here", cell.characters, (c) =>
-    `${c.name} — ${c.status}${c.disposition ? ` (${c.disposition})` : ""}`
-  );
+  addList("Here", cell.characters, (c) => {
+    const conditions = [
+      ...(c.physical_conditions || []),
+      ...(c.mental_conditions || []),
+    ];
+    const condStr = conditions.length ? ` [${conditions.join(", ")}]` : "";
+    const typeTag = c.entity_type && c.entity_type !== "NPC" ? ` [${c.entity_type}]` : "";
+    return `${c.name}${typeTag} — ${c.status}${c.disposition ? ` (${c.disposition})` : ""}${condStr}`;
+  });
   addList("Items", cell.items, (i) => `${i.name} (${i.where})`);
   addList("Features", cell.features, (f) => {
     const bits = Object.entries(f.state || {}).map(([k, v]) => `${k}: ${v}`);
@@ -249,6 +255,17 @@ function renderCharacter(sheet) {
   status.className = "char-status";
   status.textContent = `${sheet.status} · ${sheet.xp} xp · ${sheet.cell_id}`;
   root.appendChild(status);
+
+  const conditions = [
+    ...(sheet.physical_conditions || []),
+    ...(sheet.mental_conditions || []),
+  ];
+  if (conditions.length > 0) {
+    const condP = document.createElement("p");
+    condP.className = "char-conditions";
+    condP.textContent = `Conditions: ${conditions.join(", ")}`;
+    root.appendChild(condP);
+  }
 
   if (sheet.pending_level_ups > 0) {
     const pending = document.createElement("p");

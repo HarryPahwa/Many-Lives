@@ -10,11 +10,15 @@ from app.domain.types import (
     ContextPolicy,
     MemoryReference,
     MemoryType,
+    MentalCondition,
+    PhysicalCondition,
+    PlayerSummary,
     PolicyCreator,
     PolicyStatus,
     RetrievedMemory,
     RetrievalQuery,
     RetrievalResult,
+    SnapshotEntity,
     VectorMemoryConfig,
 )
 
@@ -86,3 +90,30 @@ def test_harness_contracts_round_trip_through_json():
 def test_retrieval_contracts_reject_unknown_fields():
     with pytest.raises(ValidationError):
         RetrievalResult.model_validate({"memories": [], "unexpected": True})
+
+
+def test_character_conditions_default_and_round_trip():
+    # Backward compat / defaults
+    entity = SnapshotEntity(entity_id="npc_1", name="Goblin", kind="CHARACTER")
+    assert entity.physical_conditions == []
+    assert entity.mental_conditions == []
+
+    player = PlayerSummary(player_id="p1", hp=20, max_hp=20, mp=5, max_mp=5, level=1)
+    assert player.physical_conditions == []
+    assert player.mental_conditions == []
+
+    # Valid condition enum usage
+    entity_conditioned = SnapshotEntity(
+        entity_id="npc_1",
+        name="Goblin",
+        kind="CHARACTER",
+        physical_conditions=[PhysicalCondition.BLEEDING, PhysicalCondition.BLINDED],
+        mental_conditions=[MentalCondition.FRIGHTENED],
+    )
+    assert entity_conditioned.physical_conditions == ["BLEEDING", "BLINDED"]
+    assert entity_conditioned.mental_conditions == ["FRIGHTENED"]
+
+    # Round trip
+    dumped = entity_conditioned.model_dump_json()
+    assert SnapshotEntity.model_validate_json(dumped) == entity_conditioned
+

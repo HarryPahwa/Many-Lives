@@ -37,6 +37,14 @@ from app.services.stubs import (
     get_engine,
     get_harness,
 )
+from app.domain.mutations import MutationBundle
+from app.domain.mutation_validator import apply_mutation_bundle, validate_candidate_bundle
+from app.domain.picker import select_winning_candidate
+from app.domain.rng import TurnRng
+from app.domain.rules import Resolution
+from app.harness.candidate_generator import CandidateGenerator, FakeCandidateGenerator, load_candidate_count
+from app.harness.jev_scorer import FakeJevScorer, JevScorer
+from app.services.turn_trace_logger import log_turn_trace
 
 logger = logging.getLogger("many_lives.turn")
 
@@ -161,17 +169,18 @@ class TurnOrchestrator:
         )
         engine.put_turn(record)
 
-        # 2/3. Parse (fast path) or adjudicate (free-form).
-        intent = engine.parse_fast_path(request.input, request.player_id)
+        # 2/3. Candidate generation -> Validation -> Jev Scoring -> RNG Selection -> Atomic Commit
         manifest: ContextManifest | None = None
 
         from app.config import get_settings
 
         debug = get_settings().debug_endpoints
         debug_command = _debug_target_command(request.input) if debug else None
+
         if debug and request.input.strip().lower() in _DEBUG_DIE_COMMANDS:
             intent = Intent("WAIT", request.player_id, params={"debug_die": 1})
             record.path = "DEBUG"
+            resolution = engine.resolve(view, intent)
         elif debug_command and debug_command[0] == "murder":
             intent = Intent(
                 "ATTACK",
@@ -179,6 +188,7 @@ class TurnOrchestrator:
                 params={"query": debug_command[1], "debug_murder": True},
             )
             record.path = "DEBUG"
+            resolution = engine.resolve(view, intent)
         elif debug_command and debug_command[0] == "reanimate":
             intent = Intent(
                 "WAIT",
@@ -186,10 +196,18 @@ class TurnOrchestrator:
                 params={"query": debug_command[1], "debug_reanimate": True},
             )
             record.path = "DEBUG"
-        elif intent is not None:
-            record.path = "FAST"
+            resolution = engine.resolve(view, intent)
+        elif debug and request.input.startswith("/fast "):
+            # Fast-path debug endpoint override
+            fast_input = request.input[len("/fast "):].strip()
+            intent = engine.parse_fast_path(fast_input, request.player_id)
+            if intent is not None:
+                record.path = "FAST_DEBUG"
+                resolution = engine.resolve(view, intent)
+            else:
+                resolution = EngineResolution(accepted=False, reason="Invalid fast debug syntax")
         else:
-            record.path = "ADJUDICATED"
+            record.path = "JEV_PIPELINE"
             action_class = harness.classify(request.input, view)
             record.action_class = action_class
             context_text, manifest, record.vector_search_ms = harness.build_context(
@@ -197,49 +215,114 @@ class TurnOrchestrator:
             )
             record.context_manifest = manifest.model_dump()
 
-            proposal, calls = harness.adjudicate(request.input, context_text, view, action_class)
-            record.model_calls.extend(c.model_dump() for c in calls)
-            if proposal is None:
-                # §7.1.3 / §21: invalid structured output after retries.
-                resolution = EngineResolution(
-                    accepted=False,
-                    reason="You try, but nothing about that succeeds.",
+            # World Snapshot for candidate validation
+            from app.domain.rules import WorldSnapshot
+            from app.persistence.views import WorldView as PersistenceWorldView, freeze
+            snapshot = freeze(
+                PersistenceWorldView(
+                    campaign={"id": campaign_id, "turn_count": view.current_turn, "version": 0},
+                    player={"id": view.player_id, "stats": {"hp": view.player.hp, "mp": view.player.mp, "max_hp": view.player.max_hp, "max_mp": view.player.max_mp}, "physical_conditions": list(view.player.physical_conditions), "mental_conditions": list(view.player.mental_conditions), "version": 0},
+                    current_cell={"id": view.visible_cell.cell_id, "version": 0},
+                    destination_cell=None,
+                    characters=tuple(
+                        {"id": c.id, "name": c.name, "entity_type": c.entity_type, "character": {"hp": getattr(c, "hp", 8), "max_hp": getattr(c, "max_hp", 8), "physical_conditions": list(c.physical_conditions), "mental_conditions": list(c.mental_conditions)}, "version": 0}
+                        for c in view.visible_cell.characters
+                    ),
+                    items=tuple(
+                        {"id": i.id, "name": i.name, "where": i.where, "version": 0}
+                        for i in view.visible_cell.items
+                    ),
+                    container_items=(),
+                    config={},
+                    owned_items=(),
                 )
-                return self._finish_rejected(
-                    view, record, resolution, "ADJUDICATION_FAILED", manifest
-                )
-            record.proposal = {
-                "action_type": proposal.action_type,
-                "actor_id": proposal.actor_id,
-                "targets": proposal.targets,
-                "feasibility": proposal.feasibility,
-                "reason": proposal.reason,
-                "proposed_effects_on_success": proposal.proposed_effects_on_success,
-                "proposed_effects_on_failure": proposal.proposed_effects_on_failure,
-                "utterance": proposal.utterance,
-            }
-            if proposal.feasibility == "INFEASIBLE":
-                resolution = EngineResolution(
-                    accepted=False,
-                    reason="That isn't something you can do here.",
-                )
-                return self._finish_rejected(view, record, resolution, "INFEASIBLE", manifest)
-            # The proposal is data, not authority: the engine re-validates
-            # every precondition below (§5.1, §10.3).
-            intent = Intent(
-                action_type=proposal.action_type,
-                actor_id=proposal.actor_id,
-                targets=list(proposal.targets),
-                params=dict(proposal.params),
-                effects_on_success=list(proposal.proposed_effects_on_success),
-                effects_on_failure=list(proposal.proposed_effects_on_failure),
             )
 
-        if intent.action_type in _SOCIAL_ACTIONS:
-            intent.params.setdefault("utterance", request.input[:300])
+            # Step A: Candidate Generation
+            candidate_count = load_candidate_count()
+            generator = getattr(harness, "candidate_generator", FakeCandidateGenerator())
+            generation_res = generator.generate_candidates(
+                request.input,
+                {"player": snapshot.player, "current_cell": snapshot.current_cell, "characters": list(snapshot.characters), "items": list(snapshot.items)},
+                candidate_count=candidate_count,
+            )
 
-        # 4. Resolve.
-        resolution = engine.resolve(view, intent)
+            generated_candidates = generation_res.candidates
+            filter_results: list[dict[str, Any]] = []
+            surviving_candidates: list[MutationBundle] = []
+
+            for cand in generated_candidates:
+                is_valid, reason = validate_candidate_bundle(snapshot, cand)
+                filter_results.append({
+                    "bundle_id": cand.bundle_id,
+                    "valid": is_valid,
+                    "rejection_reason": reason,
+                })
+                if is_valid:
+                    surviving_candidates.append(cand)
+
+            if not surviving_candidates:
+                # All candidates filtered out
+                resolution = EngineResolution(
+                    accepted=False,
+                    reason=filter_results[0]["rejection_reason"] if filter_results else "No valid action candidates could be performed.",
+                )
+                log_turn_trace({
+                    "campaign_id": campaign_id,
+                    "turn_id": request.turn_id,
+                    "player_input": request.input,
+                    "candidates": [c.model_dump(mode="json") for c in generated_candidates],
+                    "filter_results": filter_results,
+                    "winning_bundle": None,
+                    "accepted": False,
+                })
+                return self._finish_rejected(view, record, resolution, "SCHEMA_FILTER_REJECTED", manifest)
+
+            # Step B: Jev Semantic Scoring
+            scorer = getattr(harness, "jev_scorer", FakeJevScorer())
+            scoring_res = scorer.score_candidates(
+                request.input,
+                surviving_candidates,
+                {"player": snapshot.player, "current_cell": snapshot.current_cell, "characters": list(snapshot.characters)},
+            )
+            normalized_weights = scoring_res.normalized_weights()
+
+            # Step C: Weighted RNG Selection
+            campaign_seed = getattr(summary, "seed", 0) if hasattr(summary, "seed") else 42
+            if isinstance(campaign_seed, str):
+                try:
+                    campaign_seed = int(campaign_seed)
+                except ValueError:
+                    campaign_seed = hash(campaign_seed)
+            turn_rng = TurnRng(campaign_seed or 42, view.current_turn)
+            winning_bundle = select_winning_candidate(surviving_candidates, normalized_weights, turn_rng)
+
+            # Step D: Apply Winning Mutation Bundle
+            if hasattr(engine, "resolve_mutation_bundle"):
+                resolution = engine.resolve_mutation_bundle(view, winning_bundle, turn_id=request.turn_id)
+            else:
+                resolution = apply_mutation_bundle(snapshot, winning_bundle, turn_id=request.turn_id)
+                resolution = EngineResolution(
+                    accepted=resolution.accepted,
+                    reason=resolution.reason,
+                    effects=[m.model_dump(mode="json") for m in winning_bundle.mutations],
+                    event_types=[e.type.value for e in resolution.events],
+                    outcome_summary=resolution.outcome_summary,
+                    pending=(snapshot, winning_bundle),
+                )
+
+            # Log Turn Trace
+            log_turn_trace({
+                "campaign_id": campaign_id,
+                "turn_id": request.turn_id,
+                "player_input": request.input,
+                "candidates": [c.model_dump(mode="json") for c in generated_candidates],
+                "filter_results": filter_results,
+                "scoring": scoring_res.model_dump(mode="json"),
+                "normalized_weights": normalized_weights,
+                "winning_bundle": winning_bundle.model_dump(mode="json"),
+                "accepted": resolution.accepted,
+            })
         record.rejected_effects = list(resolution.rejected_effects)
 
         if not resolution.accepted:
