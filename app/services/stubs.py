@@ -274,6 +274,8 @@ def supports_history(engine: object) -> bool:
 
 class HarnessPort(Protocol):
     candidate_generator: Any
+    outcome_generator: Any
+    mutation_compiler: Any
     jev_scorer: Any
 
     """Developer B's seam (§27.1)."""
@@ -1173,8 +1175,12 @@ class StubHarness:
     def __init__(self) -> None:
         from app.harness.candidate_generator import FakeCandidateGenerator
         from app.harness.jev_scorer import FakeJevScorer
+        from app.harness.mutation_compiler import FakeMutationCompiler
+        from app.harness.outcome_generator import FakeOutcomeGenerator
 
         self.candidate_generator = FakeCandidateGenerator()
+        self.outcome_generator = FakeOutcomeGenerator()
+        self.mutation_compiler = FakeMutationCompiler()
         self.jev_scorer = FakeJevScorer()
 
     def context_budget(self) -> int:

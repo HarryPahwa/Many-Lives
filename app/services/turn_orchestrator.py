@@ -18,6 +18,7 @@ import re
 import threading
 from collections import defaultdict
 from datetime import datetime, timezone
+from typing import Any
 
 from app.api.schemas import (
     ContextManifest,
@@ -43,12 +44,20 @@ from app.domain.mutation_validator import apply_mutation_bundle, validate_candid
 from app.domain.picker import select_winning_candidate
 from app.domain.rng import TurnRng
 from app.domain.rules import Resolution
+from app.domain.types import ActionClass
 from app.harness.candidate_generator import (
     load_candidate_count,
+    load_candidate_pipeline_mode,
     load_candidate_validation_retries,
 )
 from app.harness.jev_scorer import JevScoringError, load_runtime_rules
 from app.harness.model_client import ModelOutputError
+from app.harness.mutation_compiler import validate_compilation_fidelity
+from app.harness.outcome_generator import (
+    CandidateOutcome,
+    mentioned_target_ids,
+    validate_outcome,
+)
 from app.services.turn_trace_logger import log_turn_trace
 
 logger = logging.getLogger("many_lives.turn")
@@ -348,22 +357,36 @@ class TurnOrchestrator:
             model_world = _model_world(snapshot, context_text)
 
             # Step A: Candidate Generation
+            pipeline_mode = load_candidate_pipeline_mode()
             candidate_count = load_candidate_count()
             max_validation_retries = load_candidate_validation_retries()
-            generated_candidates: list[MutationBundle] = []
             candidate_trace: list[dict[str, Any]] = []
             filter_results: list[dict[str, Any]] = []
-            surviving_candidates: list[MutationBundle] = []
+            surviving_candidates: list[Any] = []
+            required_target_ids = mentioned_target_ids(request.input, model_world)
 
             validation_feedback: list[str] | None = None
             for generation_attempt in range(1, max_validation_retries + 2):
                 try:
-                    generation_res = harness.candidate_generator.generate_candidates(
-                        request.input,
-                        model_world,
-                        candidate_count=candidate_count,
-                        validation_feedback=validation_feedback,
-                    )
+                    if pipeline_mode == "two_step":
+                        generation_res = harness.outcome_generator.generate_outcomes(
+                            request.input,
+                            model_world,
+                            actor_id=request.player_id,
+                            action_class=ActionClass(action_class),
+                            required_target_ids=required_target_ids,
+                            candidate_count=candidate_count,
+                            validation_feedback=validation_feedback,
+                        )
+                        generator = harness.outcome_generator
+                    else:
+                        generation_res = harness.candidate_generator.generate_candidates(
+                            request.input,
+                            model_world,
+                            candidate_count=candidate_count,
+                            validation_feedback=validation_feedback,
+                        )
+                        generator = harness.candidate_generator
                 except ModelOutputError:
                     logger.warning("candidate generation failed", exc_info=True)
                     resolution = EngineResolution(
@@ -373,7 +396,7 @@ class TurnOrchestrator:
                     return self._finish_rejected(
                         view, record, resolution, "CANDIDATE_GENERATION_FAILED", manifest
                     )
-                generation_call = getattr(harness.candidate_generator, "last_result", None)
+                generation_call = getattr(generator, "last_result", None)
                 if generation_call is not None:
                     record.model_calls.append(
                         ModelCall(
@@ -388,11 +411,19 @@ class TurnOrchestrator:
                         ).model_dump()
                     )
 
-                generated_candidates = generation_res.candidates
                 attempt_filters: list[dict[str, Any]] = []
                 surviving_candidates = []
-                for cand in generated_candidates:
-                    is_valid, reason = validate_candidate_bundle(snapshot, cand)
+                for cand in generation_res.candidates:
+                    if pipeline_mode == "two_step":
+                        is_valid, reason = validate_outcome(
+                            cand,
+                            model_world,
+                            actor_id=request.player_id,
+                            action_class=ActionClass(action_class),
+                            required_target_ids=required_target_ids,
+                        )
+                    else:
+                        is_valid, reason = validate_candidate_bundle(snapshot, cand)
                     candidate_trace.append({
                         **cand.model_dump(mode="json"),
                         "generation_attempt": generation_attempt,
@@ -422,6 +453,7 @@ class TurnOrchestrator:
                     reason=filter_results[0]["rejection_reason"] if filter_results else "No valid action candidates could be performed.",
                 )
                 log_turn_trace({
+                    "pipeline_mode": pipeline_mode,
                     "campaign_id": campaign_id,
                     "turn_id": request.turn_id,
                     "player_input": request.input,
@@ -473,7 +505,102 @@ class TurnOrchestrator:
                 except ValueError:
                     campaign_seed = hash(campaign_seed)
             turn_rng = TurnRng(campaign_seed or 42, view.current_turn)
-            winning_bundle = select_winning_candidate(surviving_candidates, normalized_weights, turn_rng)
+            winning_candidate = select_winning_candidate(
+                surviving_candidates, normalized_weights, turn_rng
+            )
+            selected_outcome: CandidateOutcome | None = None
+            compilation_trace: list[dict[str, Any]] = []
+            if pipeline_mode == "two_step":
+                selected_outcome = winning_candidate
+                compiled_bundle: MutationBundle | None = None
+                compilation_feedback: list[str] | None = None
+                for compilation_attempt in range(1, max_validation_retries + 2):
+                    try:
+                        candidate_bundle = harness.mutation_compiler.compile(
+                            selected_outcome,
+                            model_world,
+                            validation_feedback=compilation_feedback,
+                        )
+                    except ModelOutputError:
+                        logger.warning("mutation compilation failed", exc_info=True)
+                        candidate_bundle = None
+                        fidelity_valid, fidelity_reason = False, "MUTATION_COMPILATION_FAILED"
+                        mutation_valid, mutation_reason = False, "MUTATION_COMPILATION_FAILED"
+                    else:
+                        compilation_call = getattr(
+                            harness.mutation_compiler, "last_result", None
+                        )
+                        if compilation_call is not None:
+                            record.model_calls.append(
+                                ModelCall(
+                                    role="MUTATION_COMPILER",
+                                    model=compilation_call.model,
+                                    input_tokens=compilation_call.usage.get(
+                                        "input_tokens", 0
+                                    ),
+                                    output_tokens=compilation_call.usage.get(
+                                        "output_tokens", 0
+                                    ),
+                                    latency_ms=compilation_call.latency_ms,
+                                    attempts=compilation_call.attempts,
+                                    schema_valid=True,
+                                    retry_errors=compilation_call.retry_errors,
+                                ).model_dump()
+                            )
+                        fidelity_valid, fidelity_reason = validate_compilation_fidelity(
+                            selected_outcome, candidate_bundle
+                        )
+                        mutation_valid, mutation_reason = validate_candidate_bundle(
+                            snapshot, candidate_bundle
+                        )
+                    compilation_trace.append(
+                        {
+                            "attempt": compilation_attempt,
+                            "bundle": (
+                                candidate_bundle.model_dump(mode="json")
+                                if candidate_bundle is not None
+                                else None
+                            ),
+                            "fidelity_valid": fidelity_valid,
+                            "fidelity_reason": fidelity_reason,
+                            "mutation_valid": mutation_valid,
+                            "mutation_reason": mutation_reason,
+                        }
+                    )
+                    if candidate_bundle is not None and fidelity_valid and mutation_valid:
+                        compiled_bundle = candidate_bundle
+                        break
+                    compilation_feedback = [
+                        reason
+                        for reason in (fidelity_reason, mutation_reason)
+                        if reason
+                    ]
+                if compiled_bundle is None:
+                    resolution = EngineResolution(
+                        accepted=False,
+                        reason="The selected outcome could not be compiled safely.",
+                    )
+                    log_turn_trace(
+                        {
+                            "pipeline_mode": pipeline_mode,
+                            "campaign_id": campaign_id,
+                            "turn_id": request.turn_id,
+                            "player_input": request.input,
+                            "candidates": candidate_trace,
+                            "filter_results": filter_results,
+                            "scoring": scoring_res.model_dump(mode="json"),
+                            "selected_outcome": selected_outcome.model_dump(mode="json"),
+                            "compilation": compilation_trace,
+                            "winning_bundle": None,
+                            "accepted": False,
+                        }
+                    )
+                    return self._finish_rejected(
+                        view, record, resolution, "MUTATION_COMPILATION_FAILED", manifest
+                    )
+                winning_bundle = compiled_bundle
+            else:
+                winning_bundle = winning_candidate
             jev_bundle = winning_bundle
 
             # Step D: Apply Winning Mutation Bundle
@@ -492,6 +619,7 @@ class TurnOrchestrator:
 
             # Log Turn Trace
             log_turn_trace({
+                "pipeline_mode": pipeline_mode,
                 "campaign_id": campaign_id,
                 "turn_id": request.turn_id,
                 "player_input": request.input,
@@ -499,6 +627,10 @@ class TurnOrchestrator:
                 "filter_results": filter_results,
                 "scoring": scoring_res.model_dump(mode="json"),
                 "normalized_weights": normalized_weights,
+                "selected_outcome": (
+                    selected_outcome.model_dump(mode="json") if selected_outcome else None
+                ),
+                "compilation": compilation_trace,
                 "winning_bundle": winning_bundle.model_dump(mode="json"),
                 "accepted": resolution.accepted,
             })

@@ -207,6 +207,23 @@ uv run python scripts/smoke_jev.py
 
 This is opt-in and billable. Normal tests never execute it.
 
+To probe the candidate generator against a fixed in-memory dialogue/combat
+encounter, without starting the API, touching SQLite, invoking Jev, or committing
+state, run:
+
+```bash
+uv run python scripts/smoke_candidate_generator.py --mode both --runs 3
+```
+
+The command compares the one-step and two-step pipelines over identical mock
+worlds, including JEV selection, deterministic validation, spoken dialogue,
+counterattacks, model usage, and latency. It is opt-in and billable.
+
+The live application continues to use the legacy path by default. To exercise the
+experimental staged path, set `candidate_generation.pipeline_mode: two_step` in
+`config/runtime_rules.yaml`. The staged path generates semantic outcomes, lets JEV
+weight the valid outcomes, and compiles only the seeded winner into mutations.
+
 ### Persistence across a restart
 
 The central claim is that continuity comes from stored state, not a transcript.

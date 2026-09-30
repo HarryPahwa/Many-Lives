@@ -14,6 +14,8 @@ from app.domain.types import (
 from app.harness.model_client import FakeModelClient
 from app.harness.candidate_generator import ModelCandidateGenerator
 from app.harness.jev_scorer import OpenRouterJevScorer
+from app.harness.mutation_compiler import ModelMutationCompiler
+from app.harness.outcome_generator import ModelOutcomeGenerator
 from app.services.harness_adapter import ProductionHarness
 from app.services.stubs import EngineResolution, StubEngine
 
@@ -81,6 +83,8 @@ def test_production_harness_wires_real_candidate_and_decisions_clients():
     harness = ProductionHarness(client=_client())
 
     assert isinstance(harness.candidate_generator, ModelCandidateGenerator)
+    assert isinstance(harness.outcome_generator, ModelOutcomeGenerator)
+    assert isinstance(harness.mutation_compiler, ModelMutationCompiler)
     assert isinstance(harness.jev_scorer, OpenRouterJevScorer)
 
 

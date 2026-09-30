@@ -121,6 +121,81 @@ Candidate generation and scoring are replaceable seams with deterministic fakes 
 
 If every generated candidate fails deterministic validation, the generator receives the distinct rejection reasons and regenerates once. `candidate_generation.all_rejected_retries` caps this separately from provider and structured-output retries. The retry is intended to correct malformed proposals, not bypass validation. If the bounded retry also yields no valid candidate, the turn is rejected with no mutation.
 
+An experimental two-step path is available through
+`candidate_generation.pipeline_mode: two_step`. It first generates compact typed
+semantic outcomes with a shared actor, action class, and deterministically resolved
+targets. Deterministic code rejects intent drift and ungrounded consequences before
+JEV assigns probabilities. Only the seeded winning outcome is then compiled into a
+complete `MutationBundle`. Compilation has its own bounded retry and must pass both
+outcome-fidelity validation and the existing mutation validator before application.
+The model used for both stages is the configured adjudicator model; no model receives
+commit metadata or write access. `one_step` remains the default while the isolated
+smoke probe compares quality, validity, cost, and latency.
+
+#### 4.2.1 Two-step implementation and initial comparison
+
+The staged path is implemented through replaceable `OutcomeGenerator` and
+`MutationCompiler` protocols, each with model-backed and deterministic fake
+implementations. A `CandidateOutcome` contains an actor, action class, targets, and
+typed semantic consequences for dialogue, combat, conditions, transfers, movement,
+or bounded state changes. One outcome may contain several ordered consequences; a
+combat exchange followed by a counterattack therefore remains one candidate. The
+compiler translates only the selected outcome into one atomic multi-mutation bundle.
+
+Before JEV, deterministic outcome validation checks the actor and action class,
+requires explicitly named visible targets to remain present, rejects unknown entity
+references, and requires social outcomes to include an addressed verbal response.
+After compilation, fidelity validation checks that required dialogue/combat events,
+damage, conditions, transfers, movement, and state changes are represented and do not
+introduce unrelated targets or event types. The existing mutation validator then
+performs the authoritative safety check. A failed compilation is retried once with
+both fidelity and mutation-validation feedback; exhaustion rejects the turn without
+mutation rather than selecting a different semantic outcome.
+
+The isolated comparison command is:
+
+```bash
+uv run python scripts/smoke_candidate_generator.py --mode both --runs 1 --candidate-count 10
+```
+
+It uses the same frozen in-memory room, configured adjudicator model, JEV scorer, and
+seeded selection for both paths. It never starts the API, accesses SQLite, or commits
+state. The raw 2026-09-29 comparison is stored in
+`logs/candidate_pipeline_comparison.json`. This is one stochastic sample, not a
+benchmark.
+
+| Scenario | Mode | Valid candidates | Selected result | Model latency | JEV latency |
+|---|---|---:|---|---:|---:|
+| Talk to keeper | One-step | 10/10 | Spoken greeting | 4.78 s | 0.54 s |
+| Talk to keeper | Two-step | 10/10 | Neutral reply; one dialogue event | 5.84 s | 0.39 s |
+| Attack goblin | One-step | 10/10 | Attack plus retaliation | 10.23 s | 0.38 s |
+| Attack goblin | Two-step | 10/10 | Moderate hit; event plus HP mutation | 11.04 s | 0.22 s |
+
+The two-step dialogue candidates preserved the requested interaction more consistently.
+The one-step candidates drifted into intimidation, bribery, observation, and ignoring
+the keeper. The staged combat compiler produced an internally consistent selected hit:
+one `ATTACK_RESOLVED` event with five damage and one `stats.hp` decrement of five.
+
+The comparison also exposed gaps that passing structural validation did not detect:
+
+- The staged dialogue outcome put an NPC-authored line in `utterance`, whose current
+  contract represents the player's words. Dialogue roles need separate fields and
+  fidelity checks.
+- State consequences still allow arbitrary string values. Outcomes using status
+  `FLEEING`, disposition `AFRAID`, and light state `DIM` passed even though those
+  values are not all canonical.
+- Combat and dialogue outcome labels remain open strings, weakening deterministic
+  equivalence checks.
+- At ten candidates, both combat generators needed one structured-output retry. The
+  legacy path invented mutation kind `ADD`; the staged path invented consequence kind
+  `ENVIRONMENTAL`. Explicit compiler constructor instructions corrected a separate
+  `EVENT` versus `APPEND_EVENT` error found during the smaller smoke run.
+- The staged path added roughly one second in these scenarios and used similar or
+  slightly more model tokens because it makes a second structured model call.
+
+These findings are why `one_step` remains the default. The staged path is usable for
+continued evaluation but is not yet the recommended production mode.
+
 ### 4.3 Why the fast path was restored
 
 The initial merge routed every normal command through JEV. In offline tests, `FakeCandidateGenerator` produced valid but empty bundles, so a command such as `north` could be accepted and narrated without moving the player. The generated context also lacked enough authoritative topology information for a model to derive a destination safely.
@@ -243,6 +318,8 @@ app/
 │   └── views.py                      # immutable canonical world views
 ├── harness/
 │   ├── candidate_generator.py        # multi-candidate generation seam
+│   ├── outcome_generator.py          # typed semantic outcome generation and filtering
+│   ├── mutation_compiler.py          # selected outcome -> atomic mutation bundle
 │   └── jev_scorer.py                 # semantic scoring seam
 ├── services/
 │   ├── sqlite_engine.py              # domain/persistence integration
@@ -267,7 +344,7 @@ uv sync --frozen --all-extras
 Result:
 
 ```text
-555 passed, 0 failed
+563 passed, 0 failed
 ```
 
 Coverage includes SQLite lifecycle and durability, campaign-scoped operations, movement, combat, inventory, discovery, invariants, duplicate turns, concurrent serialization, mutation authorization and parity, JEV generation/scoring/selection, narration failure after commit, and browser behavior.
@@ -278,6 +355,20 @@ One Starlette/AnyIO alias deprecation warning remains and does not affect behavi
 
 - Decompose the large JEV branch in `TurnOrchestrator._take_turn_locked` into focused pipeline functions.
 - Clarify type names for model proposal bundles versus authorized execution bundles.
+- Split dialogue semantics into explicit player utterance/intent and NPC response-mode
+  fields. Do not store model-authored NPC speech in the player utterance field; let the
+  narrator realize the selected response mode from allowed facts and disposition.
+- Close the `status`, `disposition`, `light_state`, combat-outcome, dialogue-intent,
+  and response-mode vocabularies, and validate state values both at outcome generation
+  and mutation authorization boundaries.
+- Strengthen outcome fidelity so environmental changes require appropriate feature or
+  room properties and secondary-character reactions cannot introduce unsupported facts.
+- Run a repeated fixed probe matrix for both modes, recording intent preservation,
+  target fidelity, duplicate rate, response/counterattack coverage, compiler success,
+  provider retries, tokens, latency, and JEV-selected outcomes before considering a
+  default-mode change.
+- Distinguish damaging counterattacks from harmless response events in comparison
+  metrics.
 - Add measured production latency and database-size benchmarks; the original planning estimates were not retained as verified facts.
 - Add an explicit canonical conversation frame if pronoun-heavy multi-turn dialogue becomes a product requirement.
 - Implement the simple spellbook path only when P1 magic is scheduled; do not approximate it with unconstrained model mutations.

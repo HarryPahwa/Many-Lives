@@ -4,17 +4,23 @@ Selects winning candidate mutation bundles from calibrated probability distribut
 using seeded turn RNG.
 """
 
-from typing import Sequence
-from app.domain.mutations import MutationBundle
+from typing import Protocol, Sequence, TypeVar
 from app.domain.rng import TurnRng
 
 
+class IdentifiedCandidate(Protocol):
+    bundle_id: str
+
+
+CandidateT = TypeVar("CandidateT", bound=IdentifiedCandidate)
+
+
 def select_winning_candidate(
-    candidates: Sequence[MutationBundle],
+    candidates: Sequence[CandidateT],
     normalized_weights: dict[str, float],
     rng: TurnRng,
     purpose: str = "check",
-) -> MutationBundle:
+) -> CandidateT:
     """Deterministically samples a winning candidate from normalized probability weights."""
     if not candidates:
         raise ValueError("Cannot select from empty candidates list")

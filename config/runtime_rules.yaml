@@ -98,6 +98,7 @@ features:
     damage_per_turn: 1
 
 candidate_generation:
+  pipeline_mode: one_step
   candidate_count: 10
   max_output_tokens: 6000
   all_rejected_retries: 1

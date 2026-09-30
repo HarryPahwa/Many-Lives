@@ -14,7 +14,6 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, Field
 import yaml
 
-from app.domain.mutations import MutationBundle
 from app.domain.types import DomainModel
 from app.config import Settings, get_settings
 
@@ -67,7 +66,7 @@ class JevScorer(Protocol):
     def score_candidates(
         self,
         player_input: str,
-        candidates: list[MutationBundle],
+        candidates: list[Any],
         world_snapshot: Mapping[str, Any],
         runtime_rules: Mapping[str, Any] | None = None,
     ) -> JevScoringResult: ...
@@ -144,7 +143,7 @@ class OpenRouterJevScorer:
     def score_candidates(
         self,
         player_input: str,
-        candidates: list[MutationBundle],
+        candidates: list[Any],
         world_snapshot: Mapping[str, Any],
         runtime_rules: Mapping[str, Any] | None = None,
     ) -> JevScoringResult:
@@ -168,19 +167,19 @@ class OpenRouterJevScorer:
         if not self.settings.openrouter_api_key:
             raise JevScoringError("OPENROUTER_API_KEY is required for JEV")
 
-        criteria = {
-            candidate.bundle_id: json.dumps(
-                {
-                    "action": candidate.action_description,
-                    "rationale": candidate.rationale,
-                    "mutations": [
-                        mutation.model_dump(mode="json") for mutation in candidate.mutations
-                    ],
-                },
-                separators=(",", ":"),
-            )
-            for candidate in candidates
-        }
+        criteria = {}
+        for candidate in candidates:
+            details = {
+                "action": candidate.action_description,
+                "rationale": candidate.rationale,
+            }
+            mutations = getattr(candidate, "mutations", None)
+            consequences = getattr(candidate, "consequences", None)
+            if mutations is not None:
+                details["mutations"] = [item.model_dump(mode="json") for item in mutations]
+            if consequences is not None:
+                details["consequences"] = [item.model_dump(mode="json") for item in consequences]
+            criteria[candidate.bundle_id] = json.dumps(details, separators=(",", ":"))
         payload = {
             "model": self.settings.model_jev,
             "state": {
@@ -255,7 +254,7 @@ class FakeJevScorer:
     def score_candidates(
         self,
         player_input: str,
-        candidates: list[MutationBundle],
+        candidates: list[Any],
         world_snapshot: Mapping[str, Any],
         runtime_rules: Mapping[str, Any] | None = None,
     ) -> JevScoringResult:

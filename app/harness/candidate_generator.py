@@ -82,6 +82,60 @@ class ModelCandidateGenerationResult(DomainModel):
     )
 
 
+def canonicalize_model_mutations(mutations: Sequence[ModelStateMutation]) -> list[Any]:
+    """Convert the model-safe mutation vocabulary into canonical proposals."""
+
+    combat_targets = {
+        mutation.payload.target_id
+        for mutation in mutations
+        if isinstance(mutation, ModelAppendEvent)
+        and isinstance(mutation.payload, CombatEventPayload)
+        and mutation.payload.hp_delta is not None
+    }
+    converted: list[Any] = []
+    for mutation in mutations:
+        if (
+            isinstance(mutation, MutateAttribute)
+            and mutation.path == "stats.hp"
+            and mutation.target_id in combat_targets
+        ):
+            continue
+        if not isinstance(mutation, ModelAppendEvent):
+            converted.append(mutation)
+            continue
+        payload = mutation.payload.model_dump(exclude_none=True)
+        if isinstance(mutation.payload, CombatEventPayload):
+            delta = mutation.payload.hp_delta
+            payload.pop("hp_delta", None)
+            if delta is not None:
+                normalized_delta = -abs(delta)
+                payload["damage"] = abs(normalized_delta)
+                converted.append(
+                    AppendEvent(
+                        event_type=mutation.event_type,
+                        payload=payload,
+                        summary=mutation.summary,
+                    )
+                )
+                converted.append(
+                    MutateAttribute(
+                        target_id=mutation.payload.target_id,
+                        path="stats.hp",
+                        value=normalized_delta,
+                        op="ADD",
+                    )
+                )
+                continue
+        converted.append(
+            AppendEvent(
+                event_type=mutation.event_type,
+                payload=payload,
+                summary=mutation.summary,
+            )
+        )
+    return converted
+
+
 def _plain_json(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {str(key): _plain_json(item) for key, item in value.items()}
@@ -128,6 +182,16 @@ def load_candidate_validation_retries(
             )
     except Exception:
         return 1
+
+
+def load_candidate_pipeline_mode(config_path: str = "config/runtime_rules.yaml") -> str:
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        mode = str(data.get("candidate_generation", {}).get("pipeline_mode", "one_step"))
+        return mode if mode in {"one_step", "two_step"} else "one_step"
+    except Exception:
+        return "one_step"
 
 
 GENERATOR_SYSTEM_PROMPT = """You are the action-neutral World Engine generator for a turn-based persistent world.
@@ -269,64 +333,12 @@ class ModelCandidateGenerator:
             max_output_tokens=load_candidate_max_output_tokens(),
             timeout_s=20.0,
         )
-        def canonical_mutations(candidate: ModelMutationBundle) -> list[Any]:
-            combat_targets = {
-                mutation.payload.target_id
-                for mutation in candidate.mutations
-                if isinstance(mutation, ModelAppendEvent)
-                and isinstance(mutation.payload, CombatEventPayload)
-                and mutation.payload.hp_delta is not None
-            }
-            converted: list[Any] = []
-            for mutation in candidate.mutations:
-                if (
-                    isinstance(mutation, MutateAttribute)
-                    and mutation.path == "stats.hp"
-                    and mutation.target_id in combat_targets
-                ):
-                    # The typed combat payload is the single source of truth.
-                    continue
-                if not isinstance(mutation, ModelAppendEvent):
-                    converted.append(mutation)
-                    continue
-                payload = mutation.payload.model_dump(exclude_none=True)
-                if isinstance(mutation.payload, CombatEventPayload):
-                    delta = mutation.payload.hp_delta
-                    payload.pop("hp_delta", None)
-                    if delta is not None:
-                        normalized_delta = -abs(delta)
-                        payload["damage"] = abs(normalized_delta)
-                        converted.append(
-                            AppendEvent(
-                                event_type=mutation.event_type,
-                                payload=payload,
-                                summary=mutation.summary,
-                            )
-                        )
-                        converted.append(
-                            MutateAttribute(
-                                target_id=mutation.payload.target_id,
-                                path="stats.hp",
-                                value=normalized_delta,
-                                op="ADD",
-                            )
-                        )
-                        continue
-                converted.append(
-                    AppendEvent(
-                        event_type=mutation.event_type,
-                        payload=payload,
-                        summary=mutation.summary,
-                    )
-                )
-            return converted
-
         return CandidateGenerationResult(
             candidates=[
                 MutationBundle(
                     **{
                         **candidate.model_dump(exclude={"mutations"}),
-                        "mutations": canonical_mutations(candidate),
+                        "mutations": canonicalize_model_mutations(candidate.mutations),
                     }
                 )
                 for candidate in self.last_result.parsed.candidates

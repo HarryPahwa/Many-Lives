@@ -4,6 +4,13 @@ from app.api.schemas import TurnRequest
 from app.domain.mutations import MutateAttribute, MutationBundle
 from app.harness.candidate_generator import CandidateGenerationResult, FakeCandidateGenerator
 from app.harness.jev_scorer import CandidateScore, JevScoringResult, FakeJevScorer
+from app.harness.mutation_compiler import FakeMutationCompiler
+from app.harness.outcome_generator import (
+    CandidateOutcome,
+    CandidateOutcomeSet,
+    CombatConsequence,
+    FakeOutcomeGenerator,
+)
 from app.services.stubs import StubEngine, StubHarness
 from app.services.turn_orchestrator import TurnOrchestrator
 
@@ -13,6 +20,57 @@ class MockHarnessWithJev(StubHarness):
         super().__init__()
         self.candidate_generator = generator
         self.jev_scorer = scorer
+
+
+def test_turn_orchestrator_runs_two_step_pipeline(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.turn_orchestrator.load_candidate_pipeline_mode",
+        lambda: "two_step",
+    )
+    engine = StubEngine()
+    camp = engine.create_campaign("Hero", seed=42)
+    state = engine._require(camp.campaign_id)
+    from app.services.stubs import _Character
+
+    state.cells[state.player_cell].characters.append(
+        _Character(id="goblin_1", name="tunnel goblin", entity_type="ENEMY", hp=8, max_hp=8)
+    )
+    outcome = CandidateOutcome(
+        bundle_id="hit",
+        action_description="Hit the tunnel goblin.",
+        rationale="The goblin is in reach.",
+        actor_id=camp.player_id,
+        action_class="COMBAT",
+        target_ids=["goblin_1"],
+        consequences=[
+            CombatConsequence(
+                attacker_id=camp.player_id,
+                target_id="goblin_1",
+                outcome="HIT",
+                severity="LIGHT",
+            )
+        ],
+    )
+    harness = StubHarness()
+    harness.outcome_generator = FakeOutcomeGenerator(
+        [CandidateOutcomeSet(candidates=[outcome])]
+    )
+    harness.mutation_compiler = FakeMutationCompiler()
+    harness.jev_scorer = FakeJevScorer({"hit": 1.0})
+
+    result = TurnOrchestrator(engine=engine, harness=harness).take_turn(
+        camp.campaign_id,
+        TurnRequest(
+            player_id=camp.player_id,
+            turn_id="two-step-hit",
+            input="attack the tunnel goblin creatively",
+        ),
+    )
+
+    assert result.accepted
+    assert len(harness.outcome_generator._calls) == 1
+    assert len(harness.mutation_compiler._calls) == 1
+    assert state.cells[state.player_cell].characters[0].hp == 6
 
 
 def test_turn_orchestrator_runs_jev_pipeline():

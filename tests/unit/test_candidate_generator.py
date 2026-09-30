@@ -11,6 +11,7 @@ from app.harness.candidate_generator import (
     CombatEventPayload,
     load_candidate_count,
     load_candidate_max_output_tokens,
+    load_candidate_pipeline_mode,
     load_candidate_validation_retries,
 )
 from app.domain.types import Role
@@ -22,6 +23,7 @@ def test_load_candidate_count_from_yaml():
     assert count == 10
     assert load_candidate_max_output_tokens("config/runtime_rules.yaml") == 6000
     assert load_candidate_validation_retries("config/runtime_rules.yaml") == 1
+    assert load_candidate_pipeline_mode("config/runtime_rules.yaml") == "one_step"
 
 
 def test_candidate_generation_with_condition_mutations():

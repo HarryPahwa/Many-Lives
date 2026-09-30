@@ -25,6 +25,8 @@ from app.domain.types import (
 )
 from app.harness.adjudicator import adjudicate as domain_adjudicate
 from app.harness.candidate_generator import ModelCandidateGenerator
+from app.harness.mutation_compiler import ModelMutationCompiler
+from app.harness.outcome_generator import ModelOutcomeGenerator
 from app.harness.context_builder import ContextView, build_context as domain_build_context
 from app.harness.context_policy import seed_context_policy, select_action_class
 from app.harness.memory_retriever import retrieve
@@ -299,6 +301,8 @@ class ProductionHarness:
         self.db = db
         self.policy = seed_context_policy()
         self.candidate_generator = ModelCandidateGenerator(client)
+        self.outcome_generator = ModelOutcomeGenerator(client)
+        self.mutation_compiler = ModelMutationCompiler(client)
         self.jev_scorer = OpenRouterJevScorer()
 
     def context_budget(self) -> int:
